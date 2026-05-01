@@ -1,0 +1,241 @@
+openapi: 3.0.3
+info:
+  title: Remote Config API
+  version: 1.0.0
+  description: HTTP API for remote configuration management and feature toggles.
+servers:
+  - url: http://localhost:8080
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ConfigItem:
+      type: object
+      properties:
+        namespace:
+          type: string
+        key:
+          type: string
+        value:
+          type: string
+        type:
+          type: string
+        version:
+          type: integer
+          format: int64
+        isSecret:
+          type: boolean
+        updatedAt:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+    ConfigUpdateEntry:
+      type: object
+      required: [key, value, type, expectedVersion]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        type:
+          type: string
+          enum: [string, bool, int, float, json]
+        expectedVersion:
+          type: integer
+          format: int64
+        isSecret:
+          type: boolean
+    ConfigUpdateRequest:
+      type: object
+      required: [namespace, updatedBy, entries]
+      properties:
+        namespace:
+          type: string
+        updatedBy:
+          type: string
+        dryRun:
+          type: boolean
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigUpdateEntry'
+    ConfigImportItem:
+      oneOf:
+        - type: string
+        - type: number
+        - type: boolean
+        - type: object
+        - type: array
+    ConfigImportRequest:
+      type: object
+      required: [namespace, updatedBy]
+      properties:
+        namespace:
+          type: string
+        updatedBy:
+          type: string
+        dryRun:
+          type: boolean
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigUpdateEntry'
+        items:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ConfigImportItem'
+    AuditRecord:
+      type: object
+      properties:
+        namespace:
+          type: string
+        key:
+          type: string
+        oldValue:
+          type: string
+        newValue:
+          type: string
+        type:
+          type: string
+        version:
+          type: integer
+          format: int64
+        isSecret:
+          type: boolean
+        updatedAt:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+        requestId:
+          type: string
+        result:
+          type: string
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+  /docs:
+    get:
+      summary: Swagger UI
+      responses:
+        '200':
+          description: Swagger UI page
+  /openapi.yaml:
+    get:
+      summary: OpenAPI specification
+      responses:
+        '200':
+          description: OpenAPI YAML
+  /config:
+    get:
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: namespace
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Namespace configs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  namespace:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConfigItem'
+  /config/update:
+    post:
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigUpdateRequest'
+      responses:
+        '200':
+          description: Update applied
+        '409':
+          description: Version conflict
+  /cache/flush:
+    post:
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [namespace, updatedBy]
+              properties:
+                namespace:
+                  type: string
+                updatedBy:
+                  type: string
+      responses:
+        '202':
+          description: Flush published
+  /config/import:
+    post:
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigImportRequest'
+          application/x-yaml:
+            schema:
+              $ref: '#/components/schemas/ConfigImportRequest'
+      responses:
+        '200':
+          description: Import applied
+  /config/export:
+    get:
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: namespace
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, yaml]
+      responses:
+        '200':
+          description: Exported configs
+  /audit:
+    get:
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: namespace
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audit trail
