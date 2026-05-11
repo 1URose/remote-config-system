@@ -12,7 +12,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: build/Dockerfile
       target: api
     environment:
       REMOTE_CONFIG_HTTP_ADDR: ":8080"
@@ -21,21 +21,6 @@ services:
       REMOTE_CONFIG_LOG_LEVEL: "info"
     ports:
       - "8080:8080"
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: app
-    environment:
-      APP_REDIS_ADDR: "redis:6379"
-      APP_NAMESPACES: "payments"
-      APP_NAMESPACE: "payments"
-      APP_KEY: "feature_x_enabled"
-      APP_POLL_INTERVAL: "5s"
     depends_on:
       redis:
         condition: service_healthy

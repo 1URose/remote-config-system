@@ -1,290 +1,420 @@
 # Remote Config System
 
-Рабочий прототип удалённого управления конфигурациями и feature toggles на Go с Redis storage, hot-reload через Pub/Sub и локальным SDK cache.
+`remote-config-system` — это MVP на Go для remote configuration и feature toggles с hot-reload.
 
-## Архитектура
+В проекте есть два основных runtime-компонента:
 
-- `remote-config-api`:
-  HTTP admin API, JWT auth, RBAC, валидация, optimistic locking, аудит, публикация update/flush событий в Redis.
-- `remote-config-sdk`:
-  библиотека для приложений, которая загружает namespace в локальный потокобезопасный cache, слушает Pub/Sub и дочитывает только изменённые ключи.
-- `remoteconfig`:
-  верхнеуровневый facade для использования как библиотеки: `remoteconfig.New(ctx, remoteconfig.Options{RedisAddr: ..., Namespaces: ...})`.
-- `Redis`:
-  хранит конфиги, версии, namespace key index, audit trail и Pub/Sub события.
-- `examples/app`:
-  консольное приложение со встроенным SDK, которое показывает hot-reload без рестарта.
+- `cmd/admin-api` — HTTP API для управления конфигурациями и feature toggles. Он пишет данные в Redis и публикует события об изменениях.
+- `pkg/sdk` — Go SDK, который загружает данные из Redis, хранит их в локальном потокобезопасном кэше, подписывается на Redis Pub/Sub и обновляет значения без перезапуска приложения.
 
-Redis key layout:
+Для отдельного демонстрационного SDK-потребителя и frontend см. [demo/README.md](demo/README.md).
+Отдельная инструкция по полному запуску всей системы находится ниже в разделе `Полный запуск системы`.
 
-- `cfg:{namespace}:{key}`: hash c value/type/version/is_secret/updated_at/updated_by
-- `cfgkeys:{namespace}`: set ключей namespace
-- `cfgupdates:{namespace}`: Pub/Sub канал обновлений
-- `cfgaudit:{namespace}`: list audit records
+Redis в этом MVP используется как единая общая зависимость для:
 
-## Структура репозитория
+- хранения config-значений;
+- хранения feature toggles;
+- доставки событий обновления через Pub/Sub.
+
+## Структура проекта
 
 ```text
-.
+remote-config-system/
+├── cmd/
+│   ├── admin-api/
+│   └── token/
+├── demo/
+├── internal/
+│   ├── app/
+│   ├── auth/
+│   ├── cache/
+│   ├── config/
+│   ├── domain/
+│   ├── handlers/
+│   ├── metrics/
+│   ├── services/
+│   └── storage/
+├── pkg/
+│   └── sdk/
+├── build/
 ├── docker-compose.yml
-├── README.md
-├── Dockerfile
 ├── go.mod
-├── remote-config-api
-├── remote-config-sdk
-└── examples
-    └── app
+├── go.sum
+├── Makefile
+└── README.md
 ```
 
-## Что реализовано
+## Ключи Redis
 
-- Redis storage для config items и audit
-- atomic batch update через Redis Lua script
-- optimistic locking по `expectedVersion`
-- hot-reload SDK через Redis Pub/Sub
-- point reload только изменённых ключей
-- SDK `Watch`, `WatchNamespace`, `Reload`, `ReloadKeys`, `Flush`
-- last-known-good cache при временной недоступности Redis
-- admin API: `health`, `config`, `config/update`, `config/import`, `config/export`, `cache/flush`, `audit`
-- JWT auth и RBAC (`reader`, `editor`, `owner`, `admin`)
-- dry-run для update/import
-- mask secret values в audit/export
-- structured logs и Prometheus-compatible `/metrics`
-- unit/integration tests для ключевых сценариев
+Проект использует следующие шаблоны ключей Redis:
 
-## Быстрый запуск
+```text
+config:{namespace}:{key}
+config_keys:{namespace}
+feature:{namespace}:{key}
+feature_keys:{namespace}
+events:{namespace}
+audit:{namespace}
+```
 
-Нужны Docker и Docker Compose.
+## Admin API
+
+Основные endpoint'ы текущего MVP:
+
+- `PUT /configs/{namespace}/{key}`
+- `GET /configs/{namespace}/{key}`
+- `DELETE /configs/{namespace}/{key}?updatedBy=...`
+- `PUT /features/{namespace}/{key}`
+- `GET /features/{namespace}/{key}`
+- `DELETE /features/{namespace}/{key}?updatedBy=...`
+- `GET /health`
+
+В репозитории также остались legacy endpoint'ы с JWT (`/config/update`, `/config/import`, `/config/export`, `/audit`, `/cache/flush`) для совместимости с более ранней версией.
+
+### Пример запроса для config
+
+```json
+{
+  "value": "15",
+  "type": "int",
+  "expectedVersion": 0,
+  "updatedBy": "admin@example.com"
+}
+```
+
+### Пример запроса для feature toggle
+
+```json
+{
+  "enabled": true,
+  "expectedVersion": 0,
+  "updatedBy": "admin@example.com"
+}
+```
+
+## Использование SDK
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+
+	"github.com/1URose/remote-config-system/pkg/sdk"
+)
+
+func main() {
+	client, err := sdk.NewClient(
+		sdk.WithRedisAddr("localhost:6379"),
+		sdk.WithNamespace("payments"),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	if err := client.Start(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+
+	timeout, _ := client.GetInt("timeout")
+	featureOn := client.IsFeatureEnabled("new-checkout")
+
+	log.Printf("timeout=%d feature=%v", timeout, featureOn)
+}
+```
+
+Публичный MVP API SDK:
+
+```go
+func NewClient(options ...Option) (*Client, error)
+
+func (c *Client) Start(ctx context.Context) error
+func (c *Client) Close() error
+
+func (c *Client) Get(key string) (Value, bool)
+func (c *Client) GetString(key string) (string, bool)
+func (c *Client) GetBool(key string) (bool, bool)
+func (c *Client) GetInt(key string) (int, bool)
+
+func (c *Client) IsFeatureEnabled(key string) bool
+```
+
+## Полный запуск системы
+
+В полном end-to-end сценарии участвуют три runtime-части:
+
+1. `Redis` хранит config-значения, feature toggles и Pub/Sub события.
+2. `Admin API` изменяет данные в Redis и публикует события обновления.
+3. `Приложение-потребитель SDK` читает значения через `pkg/sdk` и получает обновления без перезапуска.
+
+В этом репозитории готовым SDK-потребителем является demo-проект в `demo/`.
+
+### Что и в какой последовательности запускать
+
+1. Запустить Redis.
+2. Запустить Admin API.
+3. Запустить приложение, использующее SDK.
+4. Если используется demo-проект, открыть demo-frontend в браузере.
+5. Изменять значения через Admin API и проверять, что SDK-потребитель получает обновления без рестарта.
+
+### Команды запуска
+
+Из корня репозитория запустить Redis:
 
 ```bash
-docker compose up --build -d redis api
+make docker-up
 ```
 
-Проверить health:
+Если `make` недоступен:
+
+```bash
+docker compose up -d redis
+```
+
+Во втором терминале из корня репозитория запустить Admin API:
+
+```bash
+make run-admin
+```
+
+Если `make` недоступен:
+
+```bash
+go run ./cmd/admin-api
+```
+
+В третьем терминале запустить готовое demo-приложение на SDK:
+
+```bash
+cd demo
+make run
+```
+
+Если `make` недоступен:
+
+```bash
+cd demo
+go run ./cmd/demo-service
+```
+
+Открыть demo-frontend:
+
+```text
+http://localhost:8081
+```
+
+Проверить состояние demo API:
+
+```bash
+curl http://localhost:8081/api/state
+```
+
+### Как SDK используется в demo
+
+`demo-service` не читает Redis напрямую.
+
+Он использует SDK по стандартной схеме:
+
+1. Создает клиент через `sdk.NewClient(...)`.
+2. Указывает namespace через `sdk.WithNamespace("demo-service")`.
+3. Один раз запускает SDK через `client.Start(ctx)`.
+4. Читает значения только через публичные методы SDK.
+5. Отдает эти значения через `GET /api/state`.
+
+Цепочка обновления выглядит так:
+
+```text
+Admin API -> запись в Redis -> событие Redis Pub/Sub -> подписка внутри SDK -> обновление локального кэша SDK -> demo-service читает свежие значения из SDK -> frontend показывает новое состояние
+```
+
+### Как использовать SDK в своем сервисе
+
+Если нужно использовать SDK вне demo-проекта:
+
+1. Импортировать `github.com/1URose/remote-config-system/pkg/sdk`.
+2. Создать один клиент на один namespace.
+3. Вызвать `Start(ctx)` при старте сервиса.
+4. Читать значения только через API SDK.
+5. Использовать в Admin API тот же namespace, который передан в `sdk.WithNamespace(...)`.
+
+Минимальный пример:
+
+```go
+client, err := sdk.NewClient(
+	sdk.WithRedisAddr("localhost:6379"),
+	sdk.WithNamespace("your-service"),
+)
+if err != nil {
+	log.Fatal(err)
+}
+defer client.Close()
+
+if err := client.Start(context.Background()); err != nil {
+	log.Fatal(err)
+}
+
+title, _ := client.GetString("app.title")
+featureOn := client.IsFeatureEnabled("new-feature")
+```
+
+### Полный demo-сценарий
+
+1. Запустить Redis.
+2. Запустить Admin API.
+3. Запустить `demo-service`.
+4. Открыть `http://localhost:8081`.
+5. Проверить стартовые значения.
+6. Изменить `discount.percent` через Admin API.
+7. Проверить, что скидка изменилась без перезапуска `demo-service`.
+8. Изменить `app.theme` на `dark`.
+9. Проверить, что тема изменилась сразу.
+10. Выключить `new_banner`.
+11. Проверить, что баннер исчез.
+12. Включить `checkout_enabled`.
+13. Проверить, что появилась кнопка нового checkout.
+
+## Локальный запуск
+
+Запустить Redis:
+
+```bash
+docker compose up -d redis
+```
+
+Запустить Admin API:
+
+```bash
+go run ./cmd/admin-api
+```
+
+Или через Make:
+
+```bash
+make run-admin
+```
+
+Проверка health:
 
 ```bash
 curl http://localhost:8080/health
 ```
 
-## JWT и RBAC
+## Swagger
 
-Сгенерировать admin token:
-
-```bash
-docker compose run --rm --entrypoint /usr/local/bin/remote-config-token api \
-  -subject admin@example.com \
-  -roles admin
-```
-
-Сгенерировать reader token:
-
-```bash
-docker compose run --rm --entrypoint /usr/local/bin/remote-config-token api \
-  -subject reader@example.com \
-  -roles reader
-```
-
-Сохраняем токен:
-
-```bash
-export TOKEN="<paste token here>"
-```
-
-Проверка RBAC:
-
-```bash
-curl -i -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/config?namespace=payments"
-```
-
-Reader может читать, но не сможет вызвать `POST /config/update`.
-
-## Swagger UI
-
-После запуска открой:
+Swagger UI доступен по адресу:
 
 ```text
-http://localhost:8080/docs
+http://localhost:8080/swagger/index.html
 ```
 
-Там можно подставить JWT через `Authorize` и вызывать ручки прямо из браузера. Контракт отдается с:
+Сгенерировать документацию:
+
+```bash
+make swagger-gen
+```
+
+Если генерация не видит DTO или `internal`-пакеты:
+
+```bash
+make swagger-gen-full
+```
+
+Установить `swag` CLI:
+
+```bash
+make swagger-install
+```
+
+Проверка:
+
+```bash
+make run-admin
+```
+
+После запуска Admin API открыть:
 
 ```text
-http://localhost:8080/openapi.yaml
+http://localhost:8080/swagger/index.html
 ```
 
-## Ручной flow
+Через Swagger UI можно проверить:
 
-1. Создать стартовый конфиг через admin API.
+- `PUT /configs/{namespace}/{key}`
+- `GET /configs/{namespace}/{key}`
+- `DELETE /configs/{namespace}/{key}`
+- `PUT /features/{namespace}/{key}`
+- `GET /features/{namespace}/{key}`
+- `DELETE /features/{namespace}/{key}`
+- `GET /health`
+- `GET /config`
+- `POST /config/update`
+- `POST /config/import`
+- `GET /config/export`
+- `POST /cache/flush`
+- `GET /audit`
+
+## Ручной сценарий hot-reload
+
+1. Создать config-значение:
 
 ```bash
-curl -X POST http://localhost:8080/config/update \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X PUT http://localhost:8080/configs/payments/timeout \
   -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "payments",
-    "updatedBy": "admin@example.com",
-    "dryRun": false,
-    "entries": [
-      {
-        "key": "feature_x_enabled",
-        "value": "true",
-        "type": "bool",
-        "expectedVersion": 0,
-        "isSecret": false
-      }
-    ]
-  }'
+  -d '{"value":"15","type":"int","expectedVersion":0,"updatedBy":"admin@example.com"}'
 ```
 
-2. Запустить приложение.
+2. Создать feature toggle:
 
 ```bash
-docker compose up --build app
-```
-
-3. Изменить только один ключ и увидеть hot-reload без рестарта.
-
-```bash
-curl -X POST http://localhost:8080/config/update \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X PUT http://localhost:8080/features/payments/new-checkout \
   -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "payments",
-    "updatedBy": "admin@example.com",
-    "dryRun": false,
-    "entries": [
-      {
-        "key": "feature_x_enabled",
-        "value": "false",
-        "type": "bool",
-        "expectedVersion": 1,
-        "isSecret": false
-      }
-    ]
-  }'
+  -d '{"enabled":true,"expectedVersion":0,"updatedBy":"admin@example.com"}'
 ```
 
-Приложение напечатает обновлённое значение и отработает `Watch`.
+3. Запустить приложение, использующее SDK с namespace `payments`.
 
-## Dry-run
+4. Обновить значение повторно:
 
 ```bash
-curl -X POST http://localhost:8080/config/update \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X PUT http://localhost:8080/configs/payments/timeout \
   -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "payments",
-    "updatedBy": "admin@example.com",
-    "dryRun": true,
-    "entries": [
-      {
-        "key": "feature_x_enabled",
-        "value": "true",
-        "type": "bool",
-        "expectedVersion": 2,
-        "isSecret": false
-      }
-    ]
-  }'
+  -d '{"value":"30","type":"int","expectedVersion":1,"updatedBy":"admin@example.com"}'
 ```
 
-Dry-run валидирует payload и version conflict, но не пишет в Redis и не публикует событие.
+Поток обновления:
 
-## Import / Export
-
-JSON import использует тот же payload, что и update:
-
-```bash
-curl -X POST http://localhost:8080/config/import \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "payments",
-    "updatedBy": "admin@example.com",
-    "dryRun": false,
-    "entries": [
-      {
-        "key": "max_retries",
-        "value": "3",
-        "type": "int",
-        "expectedVersion": 0,
-        "isSecret": false
-      }
-    ]
-  }'
+```text
+Admin API -> запись в Redis -> событие Redis Pub/Sub -> подписка SDK -> обновление локального кэша -> приложение читает новое значение
 ```
 
-YAML import:
+Перезапуск приложения не требуется.
+
+## Проверки для разработки
 
 ```bash
-curl -X POST http://localhost:8080/config/import \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-yaml" \
-  --data-binary $'namespace: payments\nupdatedBy: admin@example.com\ndryRun: false\nentries:\n  - key: endpoint\n    value: https://api.example.com\n    type: string\n    expectedVersion: 0\n    isSecret: false\n'
-```
-
-Экспорт:
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/config/export?namespace=payments&format=json"
-```
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/config/export?namespace=payments&format=yaml"
-```
-
-Секреты в export и audit маскируются.
-
-## Audit
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/audit?namespace=payments"
-```
-
-## Cache Flush
-
-Публикация namespace-level reload события для SDK:
-
-```bash
-curl -X POST http://localhost:8080/cache/flush \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "payments",
-    "updatedBy": "admin@example.com"
-  }'
-```
-
-## Метрики
-
-```bash
-curl http://localhost:8080/metrics
-```
-
-Экспортируются counters/gauges:
-
-- successful updates
-- failed updates
-- version conflicts
-- flush requests
-- reload requests
-- Redis connection state
-- average update apply duration
-
-## Тесты
-
-Если Go установлен локально:
-
-```bash
+go mod tidy
 go test ./...
+go vet ./...
 ```
 
-## Примечания по fallback
+Если установлен `golangci-lint`:
 
-- SDK продолжает обслуживать reads из памяти, если Redis временно недоступен после успешной загрузки.
-- При восстановлении соединения SDK автоматически переподключается и делает namespace reload.
-- При самом первом старте без Redis SDK не сможет загрузить initial state и вернёт ошибку: last-known-good существует только в памяти процесса.
+```bash
+golangci-lint run ./...
+```
+
+Доступные Make-команды:
+
+```bash
+make tidy
+make test
+make vet
+make docker-up
+make swagger-install
+make swagger-gen
+make swagger-gen-full
+make run-admin
+make run-demo
+```

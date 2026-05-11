@@ -1,0 +1,733 @@
+basePath: /
+definitions:
+  domain.AuditRecord:
+    properties:
+      isSecret:
+        type: boolean
+      key:
+        type: string
+      namespace:
+        type: string
+      newValue:
+        type: string
+      oldValue:
+        type: string
+      requestId:
+        type: string
+      result:
+        type: string
+      type:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: integer
+    type: object
+  domain.ConfigImportItem:
+    properties:
+      expectedVersion:
+        type: integer
+      isSecret:
+        type: boolean
+      type:
+        type: string
+      value: {}
+    type: object
+  domain.ConfigImportRequest:
+    properties:
+      dryRun:
+        type: boolean
+      entries:
+        items:
+          $ref: '#/definitions/domain.ConfigUpdateEntry'
+        type: array
+      items:
+        additionalProperties:
+          $ref: '#/definitions/domain.ConfigImportItem'
+        type: object
+      namespace:
+        type: string
+      updatedBy:
+        type: string
+    type: object
+  domain.ConfigItem:
+    properties:
+      isSecret:
+        type: boolean
+      key:
+        type: string
+      namespace:
+        type: string
+      type:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      value:
+        type: string
+      version:
+        type: integer
+    type: object
+  domain.ConfigUpdateEntry:
+    properties:
+      expectedVersion:
+        type: integer
+      isSecret:
+        type: boolean
+      key:
+        type: string
+      type:
+        type: string
+      value:
+        type: string
+    type: object
+  domain.ConfigUpdateRequest:
+    properties:
+      dryRun:
+        type: boolean
+      entries:
+        items:
+          $ref: '#/definitions/domain.ConfigUpdateEntry'
+        type: array
+      namespace:
+        type: string
+      updatedBy:
+        type: string
+    type: object
+  domain.ExportResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/domain.ConfigItem'
+        type: array
+      namespace:
+        type: string
+    type: object
+  domain.FeatureToggle:
+    properties:
+      enabled:
+        type: boolean
+      key:
+        type: string
+      namespace:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: integer
+    type: object
+  domain.FlushRequest:
+    properties:
+      namespace:
+        type: string
+      updatedBy:
+        type: string
+    type: object
+  http.AuditResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/domain.AuditRecord'
+        type: array
+      namespace:
+        example: payments
+        type: string
+    type: object
+  http.ConfigNamespaceResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/domain.ConfigItem'
+        type: array
+      namespace:
+        example: payments
+        type: string
+    type: object
+  http.ConfigUpdateResponse:
+    properties:
+      dryRun:
+        example: false
+        type: boolean
+      items:
+        items:
+          $ref: '#/definitions/domain.ConfigItem'
+        type: array
+      namespace:
+        example: payments
+        type: string
+    type: object
+  http.FlushResponse:
+    properties:
+      namespace:
+        example: payments
+        type: string
+      status:
+        example: flush published
+        type: string
+    type: object
+  http.HealthResponse:
+    properties:
+      error:
+        example: 'dial tcp 127.0.0.1:6379: connect: connection refused'
+        type: string
+      redis:
+        example: up
+        type: string
+      status:
+        example: ok
+        type: string
+    type: object
+  http.PutConfigKeyRequest:
+    properties:
+      expectedVersion:
+        example: 0
+        type: integer
+      isSecret:
+        example: false
+        type: boolean
+      type:
+        example: int
+        type: string
+      updatedBy:
+        example: admin@example.com
+        type: string
+      value:
+        example: "15"
+        type: string
+    type: object
+  http.PutFeatureKeyRequest:
+    properties:
+      enabled:
+        example: true
+        type: boolean
+      expectedVersion:
+        example: 0
+        type: integer
+      updatedBy:
+        example: admin@example.com
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: |-
+    Admin API для управления конфигурациями и feature toggles с поддержкой hot-reload.
+    Значения сохраняются в Redis, после чего публикуется событие обновления через Redis Pub/Sub.
+  title: Remote Config System Admin API
+  version: "1.0"
+paths:
+  /audit:
+    get:
+      description: Возвращает историю изменений конфигурации для namespace.
+      parameters:
+      - description: Namespace сервиса
+        in: query
+        name: namespace
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.AuditResponse'
+        "400":
+          description: namespace is required
+          schema:
+            type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Получить аудит namespace
+      tags:
+      - audit
+  /cache/flush:
+    post:
+      consumes:
+      - application/json
+      description: Публикует событие принудительного перечитывания конфигурации для
+        namespace.
+      parameters:
+      - description: Данные flush-запроса
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.FlushRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/http.FlushResponse'
+        "400":
+          description: bad request
+          schema:
+            type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Опубликовать flush-событие
+      tags:
+      - legacy-cache
+  /config:
+    get:
+      description: Возвращает все конфигурационные параметры для указанного namespace.
+      parameters:
+      - description: Namespace сервиса
+        in: query
+        name: namespace
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.ConfigNamespaceResponse'
+        "400":
+          description: namespace is required
+          schema:
+            type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Получить все конфиги namespace
+      tags:
+      - legacy-config
+  /config/export:
+    get:
+      description: Экспортирует конфигурацию namespace. При format=yaml возвращает
+        тот же набор данных в YAML.
+      parameters:
+      - description: Namespace сервиса
+        in: query
+        name: namespace
+        required: true
+        type: string
+      - description: 'Формат ответа: json или yaml'
+        in: query
+        name: format
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.ExportResponse'
+        "400":
+          description: namespace is required or unsupported format
+          schema:
+            type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Экспорт конфигурации
+      tags:
+      - legacy-config
+  /config/import:
+    post:
+      consumes:
+      - application/json
+      description: Импортирует конфигурацию из JSON или YAML payload и публикует событие
+        обновления.
+      parameters:
+      - description: Данные импорта конфигурации
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.ConfigImportRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.ConfigUpdateResponse'
+        "400":
+          description: bad request or validation error
+          schema:
+            type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "409":
+          description: version conflict
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Импорт конфигурации
+      tags:
+      - legacy-config
+  /config/update:
+    post:
+      consumes:
+      - application/json
+      description: Обновляет несколько конфигурационных параметров в namespace и публикует
+        событие обновления.
+      parameters:
+      - description: Данные обновления конфигурации
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.ConfigUpdateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.ConfigUpdateResponse'
+        "400":
+          description: bad request or validation error
+          schema:
+            type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "409":
+          description: version conflict
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Массовое обновление конфигурации
+      tags:
+      - legacy-config
+  /configs/{namespace}/{key}:
+    delete:
+      description: Удаляет параметр из Redis и публикует событие обновления.
+      parameters:
+      - description: Namespace сервиса
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Ключ параметра
+        in: path
+        name: key
+        required: true
+        type: string
+      - description: Кто выполняет удаление
+        in: query
+        name: updatedBy
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: validation error
+          schema:
+            type: string
+        "404":
+          description: config item not found
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      summary: Удалить конфигурационный параметр
+      tags:
+      - configs
+    get:
+      description: Возвращает конфигурационный параметр по namespace и key.
+      parameters:
+      - description: Namespace сервиса
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Ключ параметра
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.ConfigItem'
+        "404":
+          description: config item not found
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      summary: Получить конфигурационный параметр
+      tags:
+      - configs
+    put:
+      consumes:
+      - application/json
+      description: Сохраняет конфигурационный параметр в Redis и публикует событие
+        обновления для SDK.
+      parameters:
+      - description: Namespace сервиса
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Ключ параметра
+        in: path
+        name: key
+        required: true
+        type: string
+      - description: Данные конфигурационного параметра
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.PutConfigKeyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.ConfigItem'
+        "400":
+          description: bad request or validation error
+          schema:
+            type: string
+        "409":
+          description: version conflict
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      summary: Создать или обновить конфигурационный параметр
+      tags:
+      - configs
+  /features/{namespace}/{key}:
+    delete:
+      description: Удаляет feature toggle из Redis и публикует событие обновления.
+      parameters:
+      - description: Namespace сервиса
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Ключ feature toggle
+        in: path
+        name: key
+        required: true
+        type: string
+      - description: Кто выполняет удаление
+        in: query
+        name: updatedBy
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: validation error
+          schema:
+            type: string
+        "404":
+          description: config item not found
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      summary: Удалить feature toggle
+      tags:
+      - features
+    get:
+      description: Возвращает состояние feature toggle по namespace и key.
+      parameters:
+      - description: Namespace сервиса
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Ключ feature toggle
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.FeatureToggle'
+        "404":
+          description: config item not found
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      summary: Получить feature toggle
+      tags:
+      - features
+    put:
+      consumes:
+      - application/json
+      description: Сохраняет feature toggle в Redis и публикует событие обновления
+        для SDK.
+      parameters:
+      - description: Namespace сервиса
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Ключ feature toggle
+        in: path
+        name: key
+        required: true
+        type: string
+      - description: Данные feature toggle
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/http.PutFeatureKeyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.FeatureToggle'
+        "400":
+          description: bad request or validation error
+          schema:
+            type: string
+        "409":
+          description: version conflict
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      summary: Создать или обновить feature toggle
+      tags:
+      - features
+  /health:
+    get:
+      description: Возвращает статус работы сервиса и доступность Redis.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.HealthResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/http.HealthResponse'
+      summary: Проверка состояния Admin API
+      tags:
+      - health
+  /metrics:
+    get:
+      description: Возвращает метрики в формате Prometheus.
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Prometheus metrics
+          schema:
+            type: string
+      summary: Метрики Admin API
+      tags:
+      - metrics
+securityDefinitions:
+  BearerAuth:
+    description: 'Введите токен в формате: Bearer <token>'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

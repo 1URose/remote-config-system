@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote Config Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --panel-muted: #eef3fa;
+      --text: #162033;
+      --muted: #5b667d;
+      --accent: #2266ee;
+      --accent-soft: #dce7ff;
+      --success: #0f9d58;
+      --border: #d7dfec;
+      --shadow: 0 12px 32px rgba(19, 35, 67, 0.08);
+    }
+
+    body[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #101622;
+      --panel: #192234;
+      --panel-muted: #121a29;
+      --text: #eef4ff;
+      --muted: #9ca8bf;
+      --accent: #70a3ff;
+      --accent-soft: #24375d;
+      --success: #57d48a;
+      --border: #2a3852;
+      --shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 38px;
+      line-height: 1.1;
+    }
+
+    .subtitle {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+
+    .value {
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .discount {
+      margin: 0 0 16px;
+      background: var(--accent);
+      color: #ffffff;
+      border-radius: 8px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .discount-title {
+      margin: 0 0 8px;
+      font-size: 15px;
+      opacity: 0.9;
+    }
+
+    .discount-value {
+      margin: 0;
+      font-size: 52px;
+      line-height: 1;
+      font-weight: 700;
+    }
+
+    .banner {
+      margin: 0 0 16px;
+      background: var(--accent-soft);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      font-size: 17px;
+      line-height: 1.5;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .checkout-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 18px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--success);
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status strong {
+      color: var(--text);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 640px) {
+      h1 {
+        font-size: 30px;
+      }
+
+      .discount-value {
+        font-size: 40px;
+      }
+    }
+  </style>
+</head>
+<body data-theme="light">
+  <main>
+    <h1 id="title">Remote Config Demo</h1>
+    <p class="subtitle">Demo-service не перезапускается. Значения обновляются через SDK и Redis Pub/Sub.</p>
+
+    <section class="discount">
+      <p class="discount-title">Текущая скидка</p>
+      <p class="discount-value"><span id="discount">10</span>%</p>
+    </section>
+
+    <section id="banner" class="banner">
+      Новый баннер включен. Это состояние приходит в интерфейс через feature toggle.
+    </section>
+
+    <section class="actions">
+      <button id="checkout-button" class="checkout-button hidden" type="button">Оформить через новый checkout</button>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <span class="label">Название приложения</span>
+        <div id="title-state" class="value">Remote Config Demo</div>
+      </div>
+      <div class="panel">
+        <span class="label">Текущая тема</span>
+        <div id="theme" class="value">light</div>
+      </div>
+      <div class="panel">
+        <span class="label">Размер скидки</span>
+        <div id="discount-state" class="value">10%</div>
+      </div>
+      <div class="panel">
+        <span class="label">Feature toggle new_banner</span>
+        <div id="banner-state" class="value">enabled</div>
+      </div>
+      <div class="panel">
+        <span class="label">Feature toggle checkout_enabled</span>
+        <div id="checkout-state" class="value">disabled</div>
+      </div>
+      <div class="panel">
+        <span class="label">Последнее обновление</span>
+        <div id="updated-at" class="value">--:--:--</div>
+      </div>
+    </section>
+
+    <p id="fetch-status" class="status">Ожидание данных...</p>
+  </main>
+
+  <script>
+    const title = document.getElementById('title');
+    const titleState = document.getElementById('title-state');
+    const theme = document.getElementById('theme');
+    const discount = document.getElementById('discount');
+    const discountState = document.getElementById('discount-state');
+    const banner = document.getElementById('banner');
+    const bannerState = document.getElementById('banner-state');
+    const checkoutButton = document.getElementById('checkout-button');
+    const checkoutState = document.getElementById('checkout-state');
+    const updatedAt = document.getElementById('updated-at');
+    const fetchStatus = document.getElementById('fetch-status');
+
+    function formatTime(date) {
+      return date.toLocaleTimeString('ru-RU', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+    }
+
+    function setVisible(element, visible) {
+      element.classList.toggle('hidden', !visible);
+    }
+
+    function renderState(state) {
+      const nextTheme = state.theme === 'dark' ? 'dark' : 'light';
+      document.body.dataset.theme = nextTheme;
+      document.title = state.title;
+      title.textContent = state.title;
+      titleState.textContent = state.title;
+      theme.textContent = nextTheme;
+      discount.textContent = String(state.discount_percent);
+      discountState.textContent = `${state.discount_percent}%`;
+      bannerState.textContent = state.new_banner_enabled ? 'enabled' : 'disabled';
+      checkoutState.textContent = state.checkout_enabled ? 'enabled' : 'disabled';
+      setVisible(banner, state.new_banner_enabled);
+      setVisible(checkoutButton, state.checkout_enabled);
+      updatedAt.textContent = formatTime(new Date());
+      fetchStatus.innerHTML = `Последнее обновление: <strong>${updatedAt.textContent}</strong>`;
+    }
+
+    async function loadState() {
+      try {
+        const response = await fetch('/api/state', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const state = await response.json();
+        renderState(state);
+      } catch (error) {
+        fetchStatus.textContent = `Ошибка обновления: ${error.message}`;
+      }
+    }
+
+    loadState();
+    setInterval(loadState, 1000);
+  </script>
+</body>
+</html>
