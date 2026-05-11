@@ -1,5 +1,9 @@
 # Remote Config System
 
+## API documentation
+
+Подробное описание HTTP API находится в [API.md](./API.md).
+
 `remote-config-system` — это MVP на Go для remote configuration и feature toggles с hot-reload.
 
 В проекте есть два основных runtime-компонента:
@@ -16,34 +20,6 @@ Redis в этом MVP используется как единая общая з
 - хранения feature toggles;
 - доставки событий обновления через Pub/Sub.
 
-## Структура проекта
-
-```text
-remote-config-system/
-├── cmd/
-│   ├── admin-api/
-│   └── token/
-├── demo/
-├── internal/
-│   ├── app/
-│   ├── auth/
-│   ├── cache/
-│   ├── config/
-│   ├── domain/
-│   ├── handlers/
-│   ├── metrics/
-│   ├── services/
-│   └── storage/
-├── pkg/
-│   └── sdk/
-├── build/
-├── docker-compose.yml
-├── go.mod
-├── go.sum
-├── Makefile
-└── README.md
-```
-
 ## Ключи Redis
 
 Проект использует следующие шаблоны ключей Redis:
@@ -56,6 +32,15 @@ feature_keys:{namespace}
 events:{namespace}
 audit:{namespace}
 ```
+
+Кратко по назначению:
+
+- `config:{namespace}:{key}` — один config-параметр как Redis hash.
+- `config_keys:{namespace}` — set-индекс всех config-ключей внутри namespace.
+- `feature:{namespace}:{key}` — один feature toggle как Redis hash.
+- `feature_keys:{namespace}` — set-индекс всех feature toggle ключей внутри namespace.
+- `events:{namespace}` — Pub/Sub канал событий изменений для SDK.
+- `audit:{namespace}` — list с историей изменений config-параметров.
 
 ## Admin API
 

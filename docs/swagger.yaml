@@ -30,14 +30,17 @@ definitions:
       expectedVersion:
         type: integer
       isSecret:
+        example: false
         type: boolean
       type:
+        example: int
         type: string
       value: {}
     type: object
   domain.ConfigImportRequest:
     properties:
       dryRun:
+        example: false
         type: boolean
       entries:
         items:
@@ -48,53 +51,70 @@ definitions:
           $ref: '#/definitions/domain.ConfigImportItem'
         type: object
       namespace:
+        example: demo-service
         type: string
       updatedBy:
+        example: admin@example.com
         type: string
     type: object
   domain.ConfigItem:
     properties:
       isSecret:
+        example: false
         type: boolean
       key:
+        example: discount.percent
         type: string
       namespace:
+        example: demo-service
         type: string
       type:
+        example: int
         type: string
       updatedAt:
         type: string
       updatedBy:
+        example: admin@example.com
         type: string
       value:
+        example: "25"
         type: string
       version:
+        example: 1
         type: integer
     type: object
   domain.ConfigUpdateEntry:
     properties:
       expectedVersion:
+        example: 0
         type: integer
       isSecret:
+        example: false
         type: boolean
       key:
+        example: discount.percent
         type: string
       type:
+        example: int
         type: string
       value:
+        example: "25"
         type: string
     type: object
   domain.ConfigUpdateRequest:
     properties:
       dryRun:
+        example: false
         type: boolean
       entries:
         items:
           $ref: '#/definitions/domain.ConfigUpdateEntry'
         type: array
       namespace:
+        example: demo-service
         type: string
       updatedBy:
+        example: admin@example.com
         type: string
     type: object
   domain.ExportResponse:
@@ -124,8 +144,10 @@ definitions:
   domain.FlushRequest:
     properties:
       namespace:
+        example: demo-service
         type: string
       updatedBy:
+        example: admin@example.com
         type: string
     type: object
   http.AuditResponse:
@@ -276,8 +298,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Публикует событие принудительного перечитывания конфигурации для
-        namespace.
+      description: |-
+        Does not modify stored config values. It only publishes a Redis Pub/Sub flush event for the namespace so SDK clients can perform a full namespace reload.
+        Публикует событие принудительного перечитывания конфигурации для namespace.
       parameters:
       - description: Данные flush-запроса
         in: body
@@ -352,8 +375,9 @@ paths:
       - legacy-config
   /config/export:
     get:
-      description: Экспортирует конфигурацию namespace. При format=yaml возвращает
-        тот же набор данных в YAML.
+      description: |-
+        Exports config items for one namespace as JSON or YAML. Secret items are masked as "****", so export output is useful for inspection but is not a lossless backup for secret values and cannot be imported back to restore secrets as-is.
+        Экспортирует конфигурацию namespace. При format=yaml возвращает тот же набор данных в YAML.
       parameters:
       - description: Namespace сервиса
         in: query
@@ -396,8 +420,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Импортирует конфигурацию из JSON или YAML payload и публикует событие
-        обновления.
+      description: |-
+        Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The request is atomic for the whole payload, checks versions per item, and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.
+        Импортирует конфигурацию из JSON или YAML payload и публикует событие обновления.
       parameters:
       - description: Данные импорта конфигурации
         in: body
@@ -441,8 +466,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Обновляет несколько конфигурационных параметров в namespace и публикует
-        событие обновления.
+      description: |-
+        Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.
+        Обновляет несколько конфигурационных параметров в namespace и публикует событие обновления.
       parameters:
       - description: Данные обновления конфигурации
         in: body
@@ -582,8 +608,9 @@ paths:
     put:
       consumes:
       - application/json
-      description: Сохраняет конфигурационный параметр в Redis и публикует событие
-        обновления для SDK.
+      description: |-
+        Upserts a single config item. If the item does not exist, expectedVersion must be 0 and the item is created. If it exists, expectedVersion must match the current version. Only the addressed key is changed; other keys in the namespace are untouched. A successful write increments the item version and publishes one Redis Pub/Sub update event for that key.
+        Сохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.
       parameters:
       - description: Namespace сервиса
         in: path
@@ -695,8 +722,9 @@ paths:
     put:
       consumes:
       - application/json
-      description: Сохраняет feature toggle в Redis и публикует событие обновления
-        для SDK.
+      description: |-
+        Upserts a single feature toggle. If the toggle does not exist, expectedVersion must be 0 and the toggle is created. If it exists, expectedVersion must match the current version. Only the addressed toggle is changed; other toggles are untouched. A successful write increments the toggle version and publishes one Redis Pub/Sub update event for that key.
+        Сохраняет feature toggle в Redis и публикует событие обновления для SDK.
       parameters:
       - description: Namespace сервиса
         in: path

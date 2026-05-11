@@ -80,7 +80,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Публикует событие принудительного перечитывания конфигурации для namespace.",
+                "description": "Does not modify stored config values. It only publishes a Redis Pub/Sub flush event for the namespace so SDK clients can perform a full namespace reload.\nПубликует событие принудительного перечитывания конфигурации для namespace.",
                 "consumes": [
                     "application/json"
                 ],
@@ -201,7 +201,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Экспортирует конфигурацию namespace. При format=yaml возвращает тот же набор данных в YAML.",
+                "description": "Exports config items for one namespace as JSON or YAML. Secret items are masked as \"****\", so export output is useful for inspection but is not a lossless backup for secret values and cannot be imported back to restore secrets as-is.\nЭкспортирует конфигурацию namespace. При format=yaml возвращает тот же набор данных в YAML.",
                 "produces": [
                     "application/json"
                 ],
@@ -265,7 +265,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Импортирует конфигурацию из JSON или YAML payload и публикует событие обновления.",
+                "description": "Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The request is atomic for the whole payload, checks versions per item, and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.\nИмпортирует конфигурацию из JSON или YAML payload и публикует событие обновления.",
                 "consumes": [
                     "application/json"
                 ],
@@ -334,7 +334,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Обновляет несколько конфигурационных параметров в namespace и публикует событие обновления.",
+                "description": "Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.\nОбновляет несколько конфигурационных параметров в namespace и публикует событие обновления.",
                 "consumes": [
                     "application/json"
                 ],
@@ -487,7 +487,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Сохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.",
+                "description": "Upserts a single config item. If the item does not exist, expectedVersion must be 0 and the item is created. If it exists, expectedVersion must match the current version. Only the addressed key is changed; other keys in the namespace are untouched. A successful write increments the item version and publishes one Redis Pub/Sub update event for that key.\nСохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.",
                 "consumes": [
                     "application/json"
                 ],
@@ -654,7 +654,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Сохраняет feature toggle в Redis и публикует событие обновления для SDK.",
+                "description": "Upserts a single feature toggle. If the toggle does not exist, expectedVersion must be 0 and the toggle is created. If it exists, expectedVersion must match the current version. Only the addressed toggle is changed; other toggles are untouched. A successful write increments the toggle version and publishes one Redis Pub/Sub update event for that key.\nСохраняет feature toggle в Redis и публикует событие обновления для SDK.",
                 "consumes": [
                     "application/json"
                 ],
@@ -866,10 +866,12 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "isSecret": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "example": false
                 },
                 "type": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "int"
                 },
                 "value": {}
             }
@@ -878,7 +880,8 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "dryRun": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "example": false
                 },
                 "entries": {
                     "type": "array",
@@ -893,10 +896,12 @@ const docTemplate = `{
                     }
                 },
                 "namespace": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "demo-service"
                 },
                 "updatedBy": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "admin@example.com"
                 }
             }
         },
@@ -904,28 +909,35 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "isSecret": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "example": false
                 },
                 "key": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "discount.percent"
                 },
                 "namespace": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "demo-service"
                 },
                 "type": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "int"
                 },
                 "updatedAt": {
                     "type": "string"
                 },
                 "updatedBy": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "admin@example.com"
                 },
                 "value": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "25"
                 },
                 "version": {
-                    "type": "integer"
+                    "type": "integer",
+                    "example": 1
                 }
             }
         },
@@ -933,19 +945,24 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "expectedVersion": {
-                    "type": "integer"
+                    "type": "integer",
+                    "example": 0
                 },
                 "isSecret": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "example": false
                 },
                 "key": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "discount.percent"
                 },
                 "type": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "int"
                 },
                 "value": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "25"
                 }
             }
         },
@@ -953,7 +970,8 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "dryRun": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "example": false
                 },
                 "entries": {
                     "type": "array",
@@ -962,10 +980,12 @@ const docTemplate = `{
                     }
                 },
                 "namespace": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "demo-service"
                 },
                 "updatedBy": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "admin@example.com"
                 }
             }
         },
@@ -1010,10 +1030,12 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "namespace": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "demo-service"
                 },
                 "updatedBy": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "admin@example.com"
                 }
             }
         },

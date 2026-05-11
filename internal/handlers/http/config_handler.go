@@ -195,6 +195,7 @@ func (s *Server) handleGetConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 }
 
 // PutConfigKey godoc
+// @Description Upserts a single config item. If the item does not exist, expectedVersion must be 0 and the item is created. If it exists, expectedVersion must match the current version. Only the addressed key is changed; other keys in the namespace are untouched. A successful write increments the item version and publishes one Redis Pub/Sub update event for that key.
 // @Summary Создать или обновить конфигурационный параметр
 // @Description Сохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.
 // @Tags configs
@@ -284,6 +285,7 @@ func (s *Server) handleGetFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Reques
 }
 
 // PutFeatureKey godoc
+// @Description Upserts a single feature toggle. If the toggle does not exist, expectedVersion must be 0 and the toggle is created. If it exists, expectedVersion must match the current version. Only the addressed toggle is changed; other toggles are untouched. A successful write increments the toggle version and publishes one Redis Pub/Sub update event for that key.
 // @Summary Создать или обновить feature toggle
 // @Description Сохраняет feature toggle в Redis и публикует событие обновления для SDK.
 // @Tags features
@@ -351,6 +353,7 @@ func (s *Server) handleDeleteFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Req
 }
 
 // UpdateConfig godoc
+// @Description Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.
 // @Summary Массовое обновление конфигурации
 // @Description Обновляет несколько конфигурационных параметров в namespace и публикует событие обновления.
 // @Tags legacy-config
@@ -405,6 +408,7 @@ func (s *Server) handleUpdate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 // FlushCache godoc
+// @Description Does not modify stored config values. It only publishes a Redis Pub/Sub flush event for the namespace so SDK clients can perform a full namespace reload.
 // @Summary Опубликовать flush-событие
 // @Description Публикует событие принудительного перечитывания конфигурации для namespace.
 // @Tags legacy-cache
@@ -441,6 +445,7 @@ func (s *Server) handleFlush(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 // ImportConfig godoc
+// @Description Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The request is atomic for the whole payload, checks versions per item, and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.
 // @Summary Импорт конфигурации
 // @Description Импортирует конфигурацию из JSON или YAML payload и публикует событие обновления.
 // @Tags legacy-config
@@ -495,6 +500,7 @@ func (s *Server) handleImport(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 // ExportConfig godoc
+// @Description Exports config items for one namespace as JSON or YAML. Secret items are masked as "****", so export output is useful for inspection but is not a lossless backup for secret values and cannot be imported back to restore secrets as-is.
 // @Summary Экспорт конфигурации
 // @Description Экспортирует конфигурацию namespace. При format=yaml возвращает тот же набор данных в YAML.
 // @Tags legacy-config
