@@ -95,6 +95,56 @@ func TestConfigCRUDEndpointsWithoutAuth(t *testing.T) {
 	}
 }
 
+func TestGetAllConfigsEndpoint(t *testing.T) {
+	server, _, authManager, _ := newTestServer(t)
+
+	readerToken, err := authManager.Generate("reader@example.com", []string{auth.RoleReader}, time.Hour)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", "", `{"value":"15","type":"int","expectedVersion":0,"updatedBy":"tester"}`, "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("seed payments config: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/demo-service/app.theme", "", `{"value":"dark","type":"string","expectedVersion":0,"updatedBy":"tester"}`, "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("seed demo-service config: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/configs", readerToken, "", "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Namespaces []string                `json:"namespaces"`
+		Items      []domain.ExportResponse `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Namespaces) != 2 {
+		t.Fatalf("expected 2 namespaces, got %+v", response.Namespaces)
+	}
+	if response.Namespaces[0] != "demo-service" || response.Namespaces[1] != "payments" {
+		t.Fatalf("unexpected namespaces order/content: %+v", response.Namespaces)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("expected 2 namespace groups, got %+v", response.Items)
+	}
+	if response.Items[0].Namespace != "demo-service" || len(response.Items[0].Items) != 1 {
+		t.Fatalf("unexpected first namespace payload: %+v", response.Items[0])
+	}
+	if response.Items[1].Namespace != "payments" || len(response.Items[1].Items) != 1 {
+		t.Fatalf("unexpected second namespace payload: %+v", response.Items[1])
+	}
+}
+
 func TestUpdateEndpointConflict(t *testing.T) {
 	server, _, authManager, _ := newTestServer(t)
 

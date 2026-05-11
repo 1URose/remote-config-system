@@ -138,6 +138,20 @@ definitions:
         example: payments
         type: string
     type: object
+  http.ConfigCatalogResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/domain.ExportResponse'
+        type: array
+      namespaces:
+        example:
+        - payments
+        - demo-service
+        items:
+          type: string
+        type: array
+    type: object
   http.ConfigNamespaceResponse:
     properties:
       items:
@@ -468,6 +482,34 @@ paths:
       summary: Массовое обновление конфигурации
       tags:
       - legacy-config
+  /configs:
+    get:
+      description: Возвращает все namespace, в которых есть config-значения, и полный
+        набор config-элементов по каждому namespace.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.ConfigCatalogResponse'
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "500":
+          description: internal server error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Получить все namespace и все config-значения
+      tags:
+      - configs
   /configs/{namespace}/{key}:
     delete:
       description: Удаляет параметр из Redis и публикует событие обновления.

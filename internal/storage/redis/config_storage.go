@@ -31,6 +31,24 @@ func (s *ConfigStorage) Ping(ctx context.Context) error {
 	return s.client.Ping(ctx).Err()
 }
 
+func (s *ConfigStorage) ListNamespaces(ctx context.Context) ([]string, error) {
+	keys, err := s.client.Keys(ctx, namespaceSetKey("*")).Result()
+	if err != nil {
+		return nil, fmt.Errorf("list config namespaces: %w", err)
+	}
+
+	namespaces := make([]string, 0, len(keys))
+	for _, key := range keys {
+		namespace, ok := strings.CutPrefix(key, "config_keys:")
+		if !ok || namespace == "" {
+			continue
+		}
+		namespaces = append(namespaces, namespace)
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
+}
+
 func (s *ConfigStorage) GetNamespace(ctx context.Context, namespace string) ([]domain.ConfigItem, error) {
 	keys, err := s.client.SMembers(ctx, namespaceSetKey(namespace)).Result()
 	if err != nil {

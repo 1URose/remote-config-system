@@ -13,6 +13,11 @@ type ConfigNamespaceResponse struct {
 	Items     []domain.ConfigItem `json:"items"`
 }
 
+type ConfigCatalogResponse struct {
+	Namespaces []string                `json:"namespaces" example:"payments,demo-service"`
+	Items      []domain.ExportResponse `json:"items"`
+}
+
 type ConfigUpdateResponse struct {
 	Namespace string              `json:"namespace" example:"payments"`
 	DryRun    bool                `json:"dryRun" example:"false"`

@@ -49,6 +49,7 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("GET /docs/", s.handleDocsRedirect)
 	mux.Handle("GET /metrics", stdhttp.HandlerFunc(s.handleMetrics))
 	mux.Handle("/swagger/", httpSwagger.WrapHandler)
+	mux.Handle("GET /configs", s.auth.Middleware(auth.RoleReader, stdhttp.HandlerFunc(s.handleGetAllConfigs)))
 	mux.HandleFunc("GET /configs/{namespace}/{key}", s.handleGetConfigKey)
 	mux.HandleFunc("PUT /configs/{namespace}/{key}", s.handlePutConfigKey)
 	mux.HandleFunc("DELETE /configs/{namespace}/{key}", s.handleDeleteConfigKey)
@@ -141,6 +142,35 @@ func (s *Server) handleGetConfig(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	s.writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"namespace": namespace,
 		"items":     items,
+	})
+}
+
+// GetAllConfigs godoc
+// @Summary Получить все namespace и все config-значения
+// @Description Возвращает все namespace, в которых есть config-значения, и полный набор config-элементов по каждому namespace.
+// @Tags configs
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} ConfigCatalogResponse
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
+// @Failure 500 {string} string "internal server error"
+// @Router /configs [get]
+func (s *Server) handleGetAllConfigs(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	items, err := s.configService.GetAll(r.Context())
+	if err != nil {
+		s.internalError(w, "get all configs", err)
+		return
+	}
+
+	namespaces := make([]string, 0, len(items))
+	for _, item := range items {
+		namespaces = append(namespaces, item.Namespace)
+	}
+
+	s.writeJSON(w, stdhttp.StatusOK, map[string]any{
+		"namespaces": namespaces,
+		"items":      items,
 	})
 }
 

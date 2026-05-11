@@ -11,6 +11,7 @@ import (
 
 type Storage interface {
 	Ping(ctx context.Context) error
+	ListNamespaces(ctx context.Context) ([]string, error)
 	GetNamespace(ctx context.Context, namespace string) ([]domain.ConfigItem, error)
 	GetKey(ctx context.Context, namespace, key string) (domain.ConfigItem, error)
 	GetKeys(ctx context.Context, namespace string, keys []string) ([]domain.ConfigItem, error)
@@ -45,6 +46,26 @@ func (s *Service) Health(ctx context.Context) error {
 
 func (s *Service) GetNamespace(ctx context.Context, namespace string) ([]domain.ConfigItem, error) {
 	return s.storage.GetNamespace(ctx, namespace)
+}
+
+func (s *Service) GetAll(ctx context.Context) ([]domain.ExportResponse, error) {
+	namespaces, err := s.storage.ListNamespaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]domain.ExportResponse, 0, len(namespaces))
+	for _, namespace := range namespaces {
+		namespaceItems, err := s.storage.GetNamespace(ctx, namespace)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, domain.ExportResponse{
+			Namespace: namespace,
+			Items:     namespaceItems,
+		})
+	}
+	return items, nil
 }
 
 func (s *Service) GetKey(ctx context.Context, namespace, key string) (domain.ConfigItem, error) {

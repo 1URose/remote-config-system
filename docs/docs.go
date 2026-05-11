@@ -396,6 +396,49 @@ const docTemplate = `{
                 }
             }
         },
+        "/configs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Возвращает все namespace, в которых есть config-значения, и полный набор config-элементов по каждому namespace.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "configs"
+                ],
+                "summary": "Получить все namespace и все config-значения",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/http.ConfigCatalogResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/configs/{namespace}/{key}": {
             "get": {
                 "description": "Возвращает конфигурационный параметр по namespace и key.",
@@ -986,6 +1029,27 @@ const docTemplate = `{
                 "namespace": {
                     "type": "string",
                     "example": "payments"
+                }
+            }
+        },
+        "http.ConfigCatalogResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.ExportResponse"
+                    }
+                },
+                "namespaces": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "payments",
+                        "demo-service"
+                    ]
                 }
             }
         },

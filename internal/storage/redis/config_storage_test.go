@@ -139,3 +139,44 @@ func TestDeleteConfigPublishesDeleteEvent(t *testing.T) {
 		t.Fatalf("expected deleted config key to be removed from redis")
 	}
 }
+
+func TestListNamespaces(t *testing.T) {
+	mini := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	repo := NewConfigStorage(client, 50)
+
+	ctx := context.Background()
+	requests := []domain.ConfigUpdateRequest{
+		{
+			Namespace: "payments",
+			UpdatedBy: "admin@example.com",
+			Entries: []domain.ConfigUpdateEntry{
+				{Key: "timeout", Value: "30", Type: "int", ExpectedVersion: 0},
+			},
+		},
+		{
+			Namespace: "demo-service",
+			UpdatedBy: "admin@example.com",
+			Entries: []domain.ConfigUpdateEntry{
+				{Key: "app.theme", Value: "dark", Type: "string", ExpectedVersion: 0},
+			},
+		},
+	}
+
+	for i, req := range requests {
+		if _, err := repo.Update(ctx, req, "req-test"); err != nil {
+			t.Fatalf("seed request %d: %v", i, err)
+		}
+	}
+
+	namespaces, err := repo.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("list namespaces: %v", err)
+	}
+	if len(namespaces) != 2 {
+		t.Fatalf("expected 2 namespaces, got %+v", namespaces)
+	}
+	if namespaces[0] != "demo-service" || namespaces[1] != "payments" {
+		t.Fatalf("unexpected namespaces %+v", namespaces)
+	}
+}

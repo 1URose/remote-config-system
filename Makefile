@@ -20,10 +20,10 @@ swagger-install:
 	go install github.com/swaggo/swag/cmd/swag@latest
 
 swagger-gen:
-	swag init -g cmd/admin-api/main.go -o docs --parseInternal
+	go run github.com/swaggo/swag/cmd/swag@v1.16.6 init -g cmd/admin-api/main.go -o docs --parseInternal
 
 swagger-gen-full:
-	swag init -g cmd/admin-api/main.go -o docs --parseInternal --parseDependency
+	go run github.com/swaggo/swag/cmd/swag@v1.16.6 init -g cmd/admin-api/main.go -o docs --parseInternal --parseDependency
 
 test:
 	go test ./...
