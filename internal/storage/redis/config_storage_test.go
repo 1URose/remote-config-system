@@ -21,13 +21,12 @@ func TestUpdateComputesNextVersion(t *testing.T) {
 	ctx := context.Background()
 	req := domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "feature_x_enabled", Value: "true", Type: "bool"},
 		},
 	}
 
-	items, err := repo.Update(ctx, req, "req-1")
+	items, err := repo.Update(ctx, req, "admin@example.com", "req-1")
 	if err != nil {
 		t.Fatalf("unexpected update error: %v", err)
 	}
@@ -36,7 +35,7 @@ func TestUpdateComputesNextVersion(t *testing.T) {
 	}
 
 	req.Entries[0].Value = "false"
-	items, err = repo.Update(ctx, req, "req-2")
+	items, err = repo.Update(ctx, req, "admin@example.com", "req-2")
 	if err != nil {
 		t.Fatalf("unexpected second update error: %v", err)
 	}
@@ -204,14 +203,13 @@ func TestDryRunDoesNotPersistOrAudit(t *testing.T) {
 	ctx := context.Background()
 	req := domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		DryRun:    true,
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "feature_x_enabled", Value: "true", Type: "bool"},
 		},
 	}
 
-	if _, err := repo.Update(ctx, req, "req-1"); err != nil {
+	if _, err := repo.Update(ctx, req, "admin@example.com", "req-1"); err != nil {
 		t.Fatalf("unexpected dry-run error: %v", err)
 	}
 
@@ -248,12 +246,11 @@ func TestUpdatePublishesEvent(t *testing.T) {
 
 	if _, err := repo.Update(ctx, domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "timeout", Value: "30", Type: "int"},
 			{Key: "flag", Value: "true", Type: "bool"},
 		},
-	}, "req-1"); err != nil {
+	}, "admin@example.com", "req-1"); err != nil {
 		t.Fatalf("update config: %v", err)
 	}
 
@@ -281,13 +278,12 @@ func TestAuditMasksSecrets(t *testing.T) {
 	ctx := context.Background()
 	req := domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "api_token", Value: "super-secret", Type: "string", IsSecret: true},
 		},
 	}
 
-	if _, err := repo.Update(ctx, req, "req-1"); err != nil {
+	if _, err := repo.Update(ctx, req, "admin@example.com", "req-1"); err != nil {
 		t.Fatalf("unexpected update error: %v", err)
 	}
 
@@ -326,13 +322,12 @@ func TestDeleteConfigPublishesDeleteEvent(t *testing.T) {
 	ctx := context.Background()
 	req := domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "timeout", Value: "30", Type: "int"},
 		},
 	}
 
-	if _, err := repo.Update(ctx, req, "req-1"); err != nil {
+	if _, err := repo.Update(ctx, req, "admin@example.com", "req-1"); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
 	if err := repo.DeleteKey(ctx, "payments", "timeout", "admin@example.com", "req-2"); err != nil {
@@ -353,14 +348,12 @@ func TestListNamespaces(t *testing.T) {
 	requests := []domain.ConfigUpdateRequest{
 		{
 			Namespace: "payments",
-			UpdatedBy: "admin@example.com",
 			Entries: []domain.ConfigUpdateEntry{
 				{Key: "timeout", Value: "30", Type: "int"},
 			},
 		},
 		{
 			Namespace: "demo-service",
-			UpdatedBy: "admin@example.com",
 			Entries: []domain.ConfigUpdateEntry{
 				{Key: "app.theme", Value: "dark", Type: "string"},
 			},
@@ -368,7 +361,7 @@ func TestListNamespaces(t *testing.T) {
 	}
 
 	for i, req := range requests {
-		if _, err := repo.Update(ctx, req, "req-test"); err != nil {
+		if _, err := repo.Update(ctx, req, "admin@example.com", "req-test"); err != nil {
 			t.Fatalf("seed request %d: %v", i, err)
 		}
 	}
@@ -393,22 +386,20 @@ func TestUpdateDoesNotDeleteOmittedKeys(t *testing.T) {
 	ctx := context.Background()
 	if _, err := repo.Update(ctx, domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "timeout", Value: "30", Type: "int"},
 			{Key: "flag", Value: "true", Type: "bool"},
 		},
-	}, "req-1"); err != nil {
+	}, "admin@example.com", "req-1"); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
 
 	if _, err := repo.Update(ctx, domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "timeout", Value: "45", Type: "int"},
 		},
-	}, "req-2"); err != nil {
+	}, "admin@example.com", "req-2"); err != nil {
 		t.Fatalf("merge update: %v", err)
 	}
 
@@ -433,11 +424,10 @@ func TestUpdateReturnsNamespaceLocked(t *testing.T) {
 
 	_, err := repo.Update(ctx, domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "timeout", Value: "30", Type: "int"},
 		},
-	}, "req-1")
+	}, "admin@example.com", "req-1")
 	var locked *domain.NamespaceLockedError
 	if !errors.As(err, &locked) {
 		t.Fatalf("expected namespace locked error, got %v", err)
@@ -456,11 +446,10 @@ func TestUpdateReleasesNamespaceLockAfterError(t *testing.T) {
 
 	_, err := repo.Update(ctx, domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "timeout", Value: "30", Type: "int"},
 		},
-	}, "req-1")
+	}, "admin@example.com", "req-1")
 	if err == nil {
 		t.Fatalf("expected update error")
 	}

@@ -15,14 +15,12 @@ type ConfigItem struct {
 
 type ConfigUpdateRequest struct {
 	Namespace string              `json:"namespace" yaml:"namespace" example:"demo-service"`
-	UpdatedBy string              `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
 	DryRun    bool                `json:"dryRun" yaml:"dryRun" example:"false"`
 	Entries   []ConfigUpdateEntry `json:"entries" yaml:"entries"`
 }
 
 type ConfigImportRequest struct {
 	Namespace string                      `json:"namespace" yaml:"namespace" example:"demo-service"`
-	UpdatedBy string                      `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
 	DryRun    bool                        `json:"dryRun" yaml:"dryRun" example:"false"`
 	Entries   []ConfigUpdateEntry         `json:"entries,omitempty" yaml:"entries,omitempty"`
 	Items     map[string]ConfigImportItem `json:"items,omitempty" yaml:"items,omitempty"`

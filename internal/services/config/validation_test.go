@@ -39,7 +39,6 @@ func TestValidateValue(t *testing.T) {
 func TestValidateUpdateRequest(t *testing.T) {
 	req := domain.ConfigUpdateRequest{
 		Namespace: "payments",
-		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
 			{Key: "flag", Value: "true", Type: "bool"},
 		},
@@ -52,7 +51,6 @@ func TestValidateUpdateRequest(t *testing.T) {
 func TestDecodeImportRequestFromYAMLItems(t *testing.T) {
 	payload := []byte(`
 namespace: payments
-updatedBy: owner@example.com
 dryRun: true
 items:
   feature_x_enabled: true
@@ -68,7 +66,7 @@ items:
 		t.Fatalf("unexpected decode error: %v", err)
 	}
 
-	if req.Namespace != "payments" || req.UpdatedBy != "owner@example.com" || !req.DryRun {
+	if req.Namespace != "payments" || !req.DryRun {
 		t.Fatalf("unexpected import request header: %+v", req)
 	}
 	if len(req.Entries) != 3 {

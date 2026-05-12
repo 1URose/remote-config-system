@@ -48,10 +48,10 @@ audit:{namespace}
 
 - `PUT /configs/{namespace}/{key}`
 - `GET /configs/{namespace}/{key}`
-- `DELETE /configs/{namespace}/{key}?updatedBy=...`
+- `DELETE /configs/{namespace}/{key}`
 - `PUT /features/{namespace}/{key}`
 - `GET /features/{namespace}/{key}`
-- `DELETE /features/{namespace}/{key}?updatedBy=...`
+- `DELETE /features/{namespace}/{key}`
 - `GET /health`
 
 Admin API использует JWT Bearer token и роли `reader`, `editor`, `owner`, `admin`. Legacy endpoint'ы (`/config/update`, `/config/import`, `/config/export`, `/audit`, `/cache/flush`) остались для совместимости с более ранней версией.
@@ -69,8 +69,7 @@ Lock keys и TTL:
 ```json
 {
   "value": "15",
-  "type": "int",
-  "updatedBy": "admin@example.com"
+  "type": "int"
 }
 ```
 
@@ -78,8 +77,7 @@ Lock keys и TTL:
 
 ```json
 {
-  "enabled": true,
-  "updatedBy": "admin@example.com"
+  "enabled": true
 }
 ```
 
@@ -392,7 +390,7 @@ TOKEN="$(go run ./cmd/token -subject admin@example.com)"
 curl -X PUT http://localhost:8080/configs/payments/timeout \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"value":"15","type":"int","updatedBy":"admin@example.com"}'
+  -d '{"value":"15","type":"int"}'
 ```
 
 2. Создать feature toggle:
@@ -401,7 +399,7 @@ curl -X PUT http://localhost:8080/configs/payments/timeout \
 curl -X PUT http://localhost:8080/features/payments/new-checkout \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"enabled":true,"updatedBy":"admin@example.com"}'
+  -d '{"enabled":true}'
 ```
 
 3. Запустить приложение, использующее SDK с namespace `payments`.
@@ -412,7 +410,7 @@ curl -X PUT http://localhost:8080/features/payments/new-checkout \
 curl -X PUT http://localhost:8080/configs/payments/timeout \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"value":"30","type":"int","updatedBy":"admin@example.com"}'
+  -d '{"value":"30","type":"int"}'
 ```
 
 Поток обновления:

@@ -28,7 +28,6 @@ type AuditRecord struct {
 
 type FlushRequest struct {
 	Namespace string `json:"namespace" yaml:"namespace" example:"demo-service"`
-	UpdatedBy string `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
 }
 
 type ExportResponse struct {

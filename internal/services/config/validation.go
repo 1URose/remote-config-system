@@ -21,9 +21,6 @@ func ValidateUpdateRequest(req domain.ConfigUpdateRequest) error {
 	if strings.TrimSpace(req.Namespace) == "" {
 		return newValidationError("namespace is required")
 	}
-	if strings.TrimSpace(req.UpdatedBy) == "" {
-		return newValidationError("updatedBy is required")
-	}
 	if len(req.Entries) == 0 {
 		return newValidationError("entries must not be empty")
 	}

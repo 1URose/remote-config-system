@@ -17,7 +17,7 @@ type Storage interface {
 	GetKey(ctx context.Context, namespace, key string) (domain.ConfigItem, error)
 	GetKeys(ctx context.Context, namespace string, keys []string) ([]domain.ConfigItem, error)
 	UpsertKey(ctx context.Context, namespace, key, value, kind string, isSecret bool, updatedBy, requestID string) (domain.ConfigItem, error)
-	Update(ctx context.Context, req domain.ConfigUpdateRequest, requestID string) ([]domain.ConfigItem, error)
+	Update(ctx context.Context, req domain.ConfigUpdateRequest, updatedBy, requestID string) ([]domain.ConfigItem, error)
 	DeleteKey(ctx context.Context, namespace, key, updatedBy, requestID string) error
 	GetAudit(ctx context.Context, namespace string) ([]domain.AuditRecord, error)
 }
@@ -74,13 +74,16 @@ func (s *Service) GetKey(ctx context.Context, namespace, key string) (domain.Con
 	return s.storage.GetKey(ctx, namespace, key)
 }
 
-func (s *Service) Update(ctx context.Context, req domain.ConfigUpdateRequest, requestID string) ([]domain.ConfigItem, error) {
+func (s *Service) Update(ctx context.Context, req domain.ConfigUpdateRequest, updatedBy, requestID string) ([]domain.ConfigItem, error) {
 	if err := ValidateUpdateRequest(req); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(updatedBy) == "" {
+		return nil, newValidationError("updatedBy is required")
+	}
 
 	start := time.Now()
-	items, err := s.storage.Update(ctx, req, requestID)
+	items, err := s.storage.Update(ctx, req, updatedBy, requestID)
 	s.metrics.ObserveUpdateDuration(time.Since(start))
 
 	if err != nil {
@@ -127,20 +130,20 @@ func (s *Service) DeleteKey(ctx context.Context, namespace, key, updatedBy, requ
 	return s.storage.DeleteKey(ctx, namespace, key, updatedBy, requestID)
 }
 
-func (s *Service) Import(ctx context.Context, req domain.ConfigUpdateRequest, requestID string) ([]domain.ConfigItem, error) {
-	return s.Update(ctx, req, requestID)
+func (s *Service) Import(ctx context.Context, req domain.ConfigUpdateRequest, updatedBy, requestID string) ([]domain.ConfigItem, error) {
+	return s.Update(ctx, req, updatedBy, requestID)
 }
 
-func (s *Service) Flush(ctx context.Context, req domain.FlushRequest, requestID string) error {
+func (s *Service) Flush(ctx context.Context, req domain.FlushRequest, updatedBy, requestID string) error {
 	if req.Namespace == "" {
 		return fmt.Errorf("namespace is required")
 	}
-	if req.UpdatedBy == "" {
+	if strings.TrimSpace(updatedBy) == "" {
 		return fmt.Errorf("updatedBy is required")
 	}
 	s.metrics.IncFlushRequests()
 	s.metrics.IncReloadRequests()
-	return s.publisher.PublishFlush(ctx, req.Namespace, req.UpdatedBy, requestID)
+	return s.publisher.PublishFlush(ctx, req.Namespace, updatedBy, requestID)
 }
 
 func (s *Service) Export(ctx context.Context, namespace string) (domain.ExportResponse, error) {

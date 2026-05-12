@@ -103,8 +103,7 @@ curl -X PUT http://localhost:8080/configs/demo-service/app.title \
   -H "Content-Type: application/json" \
   -d '{
     "value": "Remote Config Demo v2",
-    "type": "string",
-    "updatedBy": "demo-video"
+    "type": "string"
   }'
 ```
 
@@ -116,8 +115,7 @@ curl -X PUT http://localhost:8080/configs/demo-service/discount.percent \
   -H "Content-Type: application/json" \
   -d '{
     "value": "25",
-    "type": "int",
-    "updatedBy": "demo-video"
+    "type": "int"
   }'
 ```
 
@@ -129,8 +127,7 @@ curl -X PUT http://localhost:8080/configs/demo-service/app.theme \
   -H "Content-Type: application/json" \
   -d '{
     "value": "dark",
-    "type": "string",
-    "updatedBy": "demo-video"
+    "type": "string"
   }'
 ```
 
@@ -141,8 +138,7 @@ curl -X PUT http://localhost:8080/features/demo-service/new_banner \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "enabled": false,
-    "updatedBy": "demo-video"
+    "enabled": false
   }'
 ```
 
@@ -153,8 +149,7 @@ curl -X PUT http://localhost:8080/features/demo-service/checkout_enabled \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "enabled": true,
-    "updatedBy": "demo-video"
+    "enabled": true
   }'
 ```
 

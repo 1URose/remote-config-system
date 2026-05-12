@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -224,7 +225,11 @@ func (s *Server) handlePutConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	req.UpdatedBy = defaultUpdatedBy(req.UpdatedBy)
+	updatedBy, err := subjectFromToken(r)
+	if err != nil {
+		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
+		return
+	}
 
 	item, err := s.configService.UpsertKey(
 		r.Context(),
@@ -233,7 +238,7 @@ func (s *Server) handlePutConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 		req.Value,
 		req.Type,
 		req.IsSecret,
-		req.UpdatedBy,
+		updatedBy,
 		requestIDFromContext(r.Context()),
 	)
 	if err != nil {
@@ -251,7 +256,6 @@ func (s *Server) handlePutConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 // @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ параметра"
-// @Param updatedBy query string false "Кто выполняет удаление"
 // @Success 204
 // @Failure 400 {string} string "validation error"
 // @Failure 401 {string} string "missing bearer token"
@@ -260,8 +264,16 @@ func (s *Server) handlePutConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 // @Failure 500 {string} string "internal server error"
 // @Router /configs/{namespace}/{key} [delete]
 func (s *Server) handleDeleteConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	updatedBy := defaultUpdatedBy(r.URL.Query().Get("updatedBy"))
-	err := s.configService.DeleteKey(
+	if r.URL.Query().Has("updatedBy") {
+		stdhttp.Error(w, "updatedBy is not accepted; it is taken from token subject", stdhttp.StatusBadRequest)
+		return
+	}
+	updatedBy, err := subjectFromToken(r)
+	if err != nil {
+		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
+		return
+	}
+	err = s.configService.DeleteKey(
 		r.Context(),
 		strings.TrimSpace(r.PathValue("namespace")),
 		strings.TrimSpace(r.PathValue("key")),
@@ -322,14 +334,18 @@ func (s *Server) handlePutFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	req.UpdatedBy = defaultUpdatedBy(req.UpdatedBy)
+	updatedBy, err := subjectFromToken(r)
+	if err != nil {
+		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
+		return
+	}
 
 	item, err := s.featureService.Upsert(
 		r.Context(),
 		strings.TrimSpace(r.PathValue("namespace")),
 		strings.TrimSpace(r.PathValue("key")),
 		req.Enabled,
-		req.UpdatedBy,
+		updatedBy,
 		requestIDFromContext(r.Context()),
 	)
 	if err != nil {
@@ -347,7 +363,6 @@ func (s *Server) handlePutFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Reques
 // @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ feature toggle"
-// @Param updatedBy query string false "Кто выполняет удаление"
 // @Success 204
 // @Failure 400 {string} string "validation error"
 // @Failure 401 {string} string "missing bearer token"
@@ -356,8 +371,16 @@ func (s *Server) handlePutFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Reques
 // @Failure 500 {string} string "internal server error"
 // @Router /features/{namespace}/{key} [delete]
 func (s *Server) handleDeleteFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	updatedBy := defaultUpdatedBy(r.URL.Query().Get("updatedBy"))
-	err := s.featureService.DeleteKey(
+	if r.URL.Query().Has("updatedBy") {
+		stdhttp.Error(w, "updatedBy is not accepted; it is taken from token subject", stdhttp.StatusBadRequest)
+		return
+	}
+	updatedBy, err := subjectFromToken(r)
+	if err != nil {
+		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
+		return
+	}
+	err = s.featureService.DeleteKey(
 		r.Context(),
 		strings.TrimSpace(r.PathValue("namespace")),
 		strings.TrimSpace(r.PathValue("key")),
@@ -393,12 +416,13 @@ func (s *Server) handleUpdate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	if err := s.ensureUpdatedByMatchesToken(r, &req.UpdatedBy); err != nil {
+	updatedBy, err := subjectFromToken(r)
+	if err != nil {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
 
-	items, err := s.configService.Update(r.Context(), req, requestIDFromContext(r.Context()))
+	items, err := s.configService.Update(r.Context(), req, updatedBy, requestIDFromContext(r.Context()))
 	if err != nil {
 		var locked *domain.NamespaceLockedError
 		var validationErr *domain.ValidationError
@@ -447,13 +471,12 @@ func (s *Server) handleFlush(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	updatedBy := req.UpdatedBy
-	if err := s.ensureUpdatedByMatchesToken(r, &updatedBy); err != nil {
+	updatedBy, err := subjectFromToken(r)
+	if err != nil {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	req.UpdatedBy = updatedBy
-	if err := s.configService.Flush(r.Context(), req, requestIDFromContext(r.Context())); err != nil {
+	if err := s.configService.Flush(r.Context(), req, updatedBy, requestIDFromContext(r.Context())); err != nil {
 		s.internalError(w, "flush namespace", err)
 		return
 	}
@@ -491,12 +514,13 @@ func (s *Server) handleImport(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	if err := s.ensureUpdatedByMatchesToken(r, &req.UpdatedBy); err != nil {
+	updatedBy, err := subjectFromToken(r)
+	if err != nil {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
 
-	items, err := s.configService.Import(r.Context(), req, requestIDFromContext(r.Context()))
+	items, err := s.configService.Import(r.Context(), req, updatedBy, requestIDFromContext(r.Context()))
 	if err != nil {
 		var locked *domain.NamespaceLockedError
 		var validationErr *domain.ValidationError
@@ -604,23 +628,16 @@ func (s *Server) handleAudit(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	})
 }
 
-func (s *Server) ensureUpdatedByMatchesToken(r *stdhttp.Request, updatedBy *string) error {
+func subjectFromToken(r *stdhttp.Request) (string, error) {
 	claims := auth.ClaimsFromContext(r.Context())
 	if claims == nil {
-		return fmt.Errorf("missing auth context")
+		return "", fmt.Errorf("missing auth context")
 	}
 	subject := strings.TrimSpace(claims.Subject)
 	if subject == "" {
-		return fmt.Errorf("token subject is empty")
+		return "", fmt.Errorf("token subject is empty")
 	}
-	if strings.TrimSpace(*updatedBy) == "" {
-		*updatedBy = subject
-		return nil
-	}
-	if *updatedBy != subject {
-		return fmt.Errorf("updatedBy must match token subject")
-	}
-	return nil
+	return subject, nil
 }
 
 func (s *Server) writeJSON(w stdhttp.ResponseWriter, status int, payload any) {
@@ -668,13 +685,47 @@ func randomRequestID() string {
 }
 
 func decodePayload(r *stdhttp.Request, out any) error {
-	contentType := strings.ToLower(r.Header.Get("Content-Type"))
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read request body: %w", err)
+	}
+	if containsTopLevelField(payload, r.Header.Get("Content-Type"), "updatedBy") {
+		return fmt.Errorf("updatedBy is not accepted; it is taken from token subject")
+	}
+	return decodePayloadBytes(payload, r.Header.Get("Content-Type"), out)
+}
+
+func decodePayloadBytes(payload []byte, contentType string, out any) error {
+	contentType = strings.ToLower(contentType)
 	switch {
 	case strings.Contains(contentType, "yaml"), strings.Contains(contentType, "yml"):
-		return yaml.NewDecoder(r.Body).Decode(out)
+		return yaml.NewDecoder(bytes.NewReader(payload)).Decode(out)
 	default:
-		return json.NewDecoder(r.Body).Decode(out)
+		return json.NewDecoder(bytes.NewReader(payload)).Decode(out)
 	}
+}
+
+func containsTopLevelField(payload []byte, contentType, key string) bool {
+	var decoded any
+	contentType = strings.ToLower(contentType)
+	var err error
+	if strings.Contains(contentType, "yaml") || strings.Contains(contentType, "yml") {
+		err = yaml.NewDecoder(bytes.NewReader(payload)).Decode(&decoded)
+	} else {
+		err = json.NewDecoder(bytes.NewReader(payload)).Decode(&decoded)
+	}
+	if err != nil {
+		return false
+	}
+	switch typed := decoded.(type) {
+	case map[string]any:
+		_, ok := typed[key]
+		return ok
+	case map[any]any:
+		_, ok := typed[key]
+		return ok
+	}
+	return false
 }
 
 func extractKeys(entries []domain.ConfigUpdateEntry) []string {
@@ -685,22 +736,12 @@ func extractKeys(entries []domain.ConfigUpdateEntry) []string {
 	return keys
 }
 
-func defaultUpdatedBy(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "api"
-	}
-	return value
-}
-
 type PutConfigKeyRequest struct {
-	Value     string `json:"value" yaml:"value" example:"15"`
-	Type      string `json:"type" yaml:"type" example:"int"`
-	IsSecret  bool   `json:"isSecret" yaml:"isSecret" example:"false"`
-	UpdatedBy string `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
+	Value    string `json:"value" yaml:"value" example:"15"`
+	Type     string `json:"type" yaml:"type" example:"int"`
+	IsSecret bool   `json:"isSecret" yaml:"isSecret" example:"false"`
 }
 
 type PutFeatureKeyRequest struct {
-	Enabled   bool   `json:"enabled" yaml:"enabled" example:"true"`
-	UpdatedBy string `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
+	Enabled bool `json:"enabled" yaml:"enabled" example:"true"`
 }

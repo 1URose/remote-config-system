@@ -20,10 +20,12 @@ func DecodeImportRequest(payload []byte, contentType string) (domain.ConfigUpdat
 		return domain.ConfigUpdateRequest{}, newValidationError(fmt.Sprintf("invalid import payload: %v", err))
 	}
 	raw = normalizeMap(raw).(map[string]any)
+	if _, ok := raw["updatedBy"]; ok {
+		return domain.ConfigUpdateRequest{}, newValidationError("updatedBy is not accepted; it is taken from token subject")
+	}
 
 	req := domain.ConfigUpdateRequest{
 		Namespace: asString(raw["namespace"]),
-		UpdatedBy: asString(raw["updatedBy"]),
 		DryRun:    asBool(raw["dryRun"]),
 	}
 

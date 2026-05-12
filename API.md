@@ -133,11 +133,7 @@ echo "Bearer $(go run ./cmd/token -subject admin@example.com)"
 -H "Authorization: Bearer $TOKEN"
 ```
 
-Особенность protected endpoints:
-
-- если поле `updatedBy` не передано, API подставит `sub` из JWT;
-- если `updatedBy` передано, оно должно совпадать с `sub` из JWT;
-- иначе вернется `400 updatedBy must match token subject`.
+Автор изменения не передается в запросах. API всегда берет его из `sub` JWT и сохраняет в `updatedBy` в ответах, audit records и Pub/Sub событиях.
 
 Матрица прав:
 
@@ -165,7 +161,6 @@ echo "Bearer $(go run ./cmd/token -subject admin@example.com)"
 - `400 Bad Request`
   - отсутствует обязательный параметр;
   - неверный `type`;
-  - `updatedBy` не совпадает с `sub` токена;
   - неверный формат JSON/YAML;
   - невалидный `bool` / `int` / `float` / `json`.
 - `401 Unauthorized`
@@ -229,7 +224,6 @@ Body:
   - для `bool`, `int`, `float`, `json` пустая строка приведет к `400`.
 - `type` - обязательный.
 - `isSecret` - необязательный, по умолчанию `false`.
-- `updatedBy` - необязательный, по умолчанию `"api"`.
 
 `expectedVersion` в запросе не передается. Версия вычисляется сервером атомарно: новая запись получает `version=1`, существующая - `current+1`. Перед записью API проверяет `config_bulk_lock:{namespace}`, затем берет `config_write_lock:{namespace}:{key}`. Если namespace или key уже заблокирован другой write-операцией, запрос получает `423 Locked`, значение не меняется и Pub/Sub событие не публикуется.
 
@@ -241,8 +235,7 @@ curl -X PUT "http://localhost:8080/configs/demo-service/discount.percent" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "25",
-    "type": "int",
-    "updatedBy": "admin@example.com"
+    "type": "int"
   }'
 ```
 
@@ -329,15 +322,11 @@ curl "http://localhost:8080/configs/demo-service/discount.percent" \
 - URL: `/configs/{namespace}/{key}`
 - Авторизация: Bearer token с ролью `owner` и выше.
 
-Query params:
-
-- `updatedBy` - необязательный, если не передан, будет `"api"`.
-
 Пример:
 
 ```bash
 curl -X DELETE \
-  "http://localhost:8080/configs/demo-service/app.title?updatedBy=admin@example.com" \
+  "http://localhost:8080/configs/demo-service/app.title" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -351,7 +340,6 @@ curl -X DELETE \
 
 - `400 namespace is required`
 - `400 key is required`
-- `400 updatedBy is required`
 - `404 config item not found`
 
 Что происходит внутри:
@@ -490,7 +478,6 @@ curl "http://localhost:8080/configs" \
 Body:
 
 - `namespace` - обязательный.
-- `updatedBy` - необязательный, но если передан, должен совпадать с `sub` токена.
 - `dryRun` - необязательный, по умолчанию `false`.
 - `entries` - обязательный непустой массив.
 
@@ -511,7 +498,6 @@ curl -X POST "http://localhost:8080/config/update" \
   -H "Content-Type: application/json" \
   -d '{
     "namespace": "demo-service",
-    "updatedBy": "admin@example.com",
     "entries": [
       {
         "key": "app.title",
@@ -635,7 +621,6 @@ curl -X POST "http://localhost:8080/config/import" \
   -H "Content-Type: application/json" \
   -d '{
     "namespace": "demo-service",
-    "updatedBy": "admin@example.com",
     "items": {
       "app.title": {
         "value": "Remote Config Demo",
@@ -655,7 +640,6 @@ curl -X POST "http://localhost:8080/config/import" \
   -H "Content-Type: application/x-yaml" \
   --data-binary @- <<'YAML'
 namespace: demo-service
-updatedBy: admin@example.com
 items:
   app.title:
     value: Remote Config Demo
@@ -817,7 +801,6 @@ feature:{namespace}:{key}
 Body:
 
 - `enabled` - логически обязательный. Важно: если поле не передано, Go-декодер оставит `false`, и API запишет `false`.
-- `updatedBy` - необязательный, по умолчанию `"api"`.
 
 `expectedVersion` в запросе не передается. Версия вычисляется сервером атомарно: новая запись получает `version=1`, существующая - `current+1`. Перед записью API берет `feature_write_lock:{namespace}:{key}` через `SET NX` с TTL 30 секунд. Если toggle уже заблокирован другой write-операцией, запрос получает `423 Locked`, значение не меняется и Pub/Sub событие не публикуется.
 
@@ -828,8 +811,7 @@ curl -X PUT "http://localhost:8080/features/demo-service/checkout_enabled" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "enabled": true,
-    "updatedBy": "admin@example.com"
+    "enabled": true
   }'
 ```
 
@@ -850,7 +832,7 @@ curl -X PUT "http://localhost:8080/features/demo-service/checkout_enabled" \
 
 Что происходит внутри:
 
-1. API валидирует `namespace`, `key`, `updatedBy`.
+1. API валидирует `namespace` и `key`.
 2. Берет `feature_write_lock:{namespace}:{key}` через `SET NX` с TTL 30 секунд.
 3. Redis Lua script атомарно читает текущую версию и создает или обновляет только один toggle.
 4. Ключ добавляется в `feature_keys:{namespace}`.
@@ -905,15 +887,11 @@ curl "http://localhost:8080/features/demo-service/checkout_enabled" \
 - URL: `/features/{namespace}/{key}`
 - Авторизация: Bearer token с ролью `owner` и выше.
 
-Query params:
-
-- `updatedBy` - необязательный, по умолчанию `"api"`.
-
 Пример:
 
 ```bash
 curl -X DELETE \
-  "http://localhost:8080/features/demo-service/new_banner?updatedBy=admin@example.com" \
+  "http://localhost:8080/features/demo-service/new_banner" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -1076,7 +1054,6 @@ curl "http://localhost:8080/audit?namespace=demo-service" \
 Body:
 
 - `namespace` - обязательный.
-- `updatedBy` - необязательный, но если передан, должен совпадать с `sub` токена.
 
 Пример:
 
@@ -1085,8 +1062,7 @@ curl -X POST "http://localhost:8080/cache/flush" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "demo-service",
-    "updatedBy": "admin@example.com"
+    "namespace": "demo-service"
   }'
 ```
 
@@ -1145,8 +1121,7 @@ curl -X PUT "http://localhost:8080/configs/demo-service/app.title" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "Remote Config Demo",
-    "type": "string",
-    "updatedBy": "admin@example.com"
+    "type": "string"
   }'
 
 curl -X PUT "http://localhost:8080/configs/demo-service/app.theme" \
@@ -1154,8 +1129,7 @@ curl -X PUT "http://localhost:8080/configs/demo-service/app.theme" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "dark",
-    "type": "string",
-    "updatedBy": "admin@example.com"
+    "type": "string"
   }'
 
 curl -X PUT "http://localhost:8080/configs/demo-service/discount.percent" \
@@ -1163,24 +1137,21 @@ curl -X PUT "http://localhost:8080/configs/demo-service/discount.percent" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "25",
-    "type": "int",
-    "updatedBy": "admin@example.com"
+    "type": "int"
   }'
 
 curl -X PUT "http://localhost:8080/features/demo-service/new_banner" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "enabled": true,
-    "updatedBy": "admin@example.com"
+    "enabled": true
   }'
 
 curl -X PUT "http://localhost:8080/features/demo-service/checkout_enabled" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "enabled": true,
-    "updatedBy": "admin@example.com"
+    "enabled": true
   }'
 
 curl "http://localhost:8080/config?namespace=demo-service" \
@@ -1202,7 +1173,6 @@ curl -X POST "http://localhost:8080/cache/flush" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "demo-service",
-    "updatedBy": "admin@example.com"
+    "namespace": "demo-service"
   }'
 ```

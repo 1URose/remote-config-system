@@ -166,7 +166,7 @@ func (s *ConfigStorage) UpsertKey(ctx context.Context, namespace, key, value, ki
 	}, nil
 }
 
-func (s *ConfigStorage) Update(ctx context.Context, req domain.ConfigUpdateRequest, requestID string) (items []domain.ConfigItem, err error) {
+func (s *ConfigStorage) Update(ctx context.Context, req domain.ConfigUpdateRequest, updatedBy, requestID string) (items []domain.ConfigItem, err error) {
 	lockToken := fmt.Sprintf("%s:%d", requestID, time.Now().UnixNano())
 	locked, err := s.acquireNamespaceBulkLock(ctx, req.Namespace, lockToken)
 	if err != nil {
@@ -191,7 +191,7 @@ func (s *ConfigStorage) Update(ctx context.Context, req domain.ConfigUpdateReque
 		dryRun = "1"
 	}
 
-	args = append(args, req.Namespace, nowRaw, req.UpdatedBy, requestID, dryRun, len(req.Entries), s.auditLimit)
+	args = append(args, req.Namespace, nowRaw, updatedBy, requestID, dryRun, len(req.Entries), s.auditLimit)
 	for _, entry := range req.Entries {
 		isSecret := "0"
 		if entry.IsSecret {
@@ -228,7 +228,7 @@ func (s *ConfigStorage) Update(ctx context.Context, req domain.ConfigUpdateReque
 			Version:   version,
 			IsSecret:  stringify(raw[i+4]) == "1",
 			UpdatedAt: now,
-			UpdatedBy: req.UpdatedBy,
+			UpdatedBy: updatedBy,
 		})
 	}
 	return items, nil
