@@ -612,12 +612,6 @@ const docTemplate = `{
                         "name": "key",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Кто выполняет удаление",
-                        "name": "updatedBy",
-                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -830,12 +824,6 @@ const docTemplate = `{
                         "name": "key",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Кто выполняет удаление",
-                        "name": "updatedBy",
-                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1014,10 +1002,6 @@ const docTemplate = `{
                 "namespace": {
                     "type": "string",
                     "example": "demo-service"
-                },
-                "updatedBy": {
-                    "type": "string",
-                    "example": "admin@example.com"
                 }
             }
         },
@@ -1094,10 +1078,6 @@ const docTemplate = `{
                 "namespace": {
                     "type": "string",
                     "example": "demo-service"
-                },
-                "updatedBy": {
-                    "type": "string",
-                    "example": "admin@example.com"
                 }
             }
         },
@@ -1144,10 +1124,6 @@ const docTemplate = `{
                 "namespace": {
                     "type": "string",
                     "example": "demo-service"
-                },
-                "updatedBy": {
-                    "type": "string",
-                    "example": "admin@example.com"
                 }
             }
         },
@@ -1262,10 +1238,6 @@ const docTemplate = `{
                     "type": "string",
                     "example": "int"
                 },
-                "updatedBy": {
-                    "type": "string",
-                    "example": "admin@example.com"
-                },
                 "value": {
                     "type": "string",
                     "example": "15"
@@ -1278,10 +1250,6 @@ const docTemplate = `{
                 "enabled": {
                     "type": "boolean",
                     "example": true
-                },
-                "updatedBy": {
-                    "type": "string",
-                    "example": "admin@example.com"
                 }
             }
         }

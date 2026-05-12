@@ -51,9 +51,6 @@ definitions:
       namespace:
         example: demo-service
         type: string
-      updatedBy:
-        example: admin@example.com
-        type: string
     type: object
   domain.ConfigItem:
     properties:
@@ -108,9 +105,6 @@ definitions:
       namespace:
         example: demo-service
         type: string
-      updatedBy:
-        example: admin@example.com
-        type: string
     type: object
   domain.ExportResponse:
     properties:
@@ -140,9 +134,6 @@ definitions:
     properties:
       namespace:
         example: demo-service
-        type: string
-      updatedBy:
-        example: admin@example.com
         type: string
     type: object
   http.AuditResponse:
@@ -221,9 +212,6 @@ definitions:
       type:
         example: int
         type: string
-      updatedBy:
-        example: admin@example.com
-        type: string
       value:
         example: "15"
         type: string
@@ -233,9 +221,6 @@ definitions:
       enabled:
         example: true
         type: boolean
-      updatedBy:
-        example: admin@example.com
-        type: string
     type: object
 host: localhost:8080
 info:
@@ -539,10 +524,6 @@ paths:
         name: key
         required: true
         type: string
-      - description: Кто выполняет удаление
-        in: query
-        name: updatedBy
-        type: string
       produces:
       - application/json
       responses:
@@ -682,10 +663,6 @@ paths:
         in: path
         name: key
         required: true
-        type: string
-      - description: Кто выполняет удаление
-        in: query
-        name: updatedBy
         type: string
       produces:
       - application/json
