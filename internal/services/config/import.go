@@ -96,8 +96,7 @@ func parseEntries(raw any) ([]domain.ConfigUpdateEntry, error) {
 
 func parseImportItem(key string, raw any) (domain.ConfigUpdateEntry, error) {
 	entry := domain.ConfigUpdateEntry{
-		Key:             key,
-		ExpectedVersion: 0,
+		Key: key,
 	}
 
 	switch typed := normalizeMap(raw).(type) {
@@ -117,11 +116,6 @@ func parseImportItem(key string, raw any) (domain.ConfigUpdateEntry, error) {
 		}
 
 		entry.IsSecret = asBool(typed["isSecret"])
-		expectedVersion, err := parseExpectedVersion(typed["expectedVersion"])
-		if err != nil {
-			return domain.ConfigUpdateEntry{}, newValidationError(fmt.Sprintf("key %q: %v", key, err))
-		}
-		entry.ExpectedVersion = expectedVersion
 
 		value, inferredType, err := encodeConfigValue(rawValue, asString(typed["type"]))
 		if err != nil {
@@ -282,29 +276,6 @@ func normalizeMap(value any) any {
 	}
 }
 
-func parseExpectedVersion(value any) (int64, error) {
-	if value == nil {
-		return 0, nil
-	}
-	switch typed := value.(type) {
-	case int:
-		return int64(typed), nil
-	case int64:
-		return typed, nil
-	case float64:
-		if math.Trunc(typed) != typed {
-			return 0, fmt.Errorf("expectedVersion must be an integer")
-		}
-		return int64(typed), nil
-	case json.Number:
-		return typed.Int64()
-	case string:
-		return strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
-	default:
-		return 0, fmt.Errorf("expectedVersion must be numeric")
-	}
-}
-
 func asString(value any) string {
 	if value == nil {
 		return ""
@@ -340,7 +311,6 @@ func trimFloat(value float64) string {
 
 func hasImportMetadata(value map[string]any) bool {
 	_, hasType := value["type"]
-	_, hasVersion := value["expectedVersion"]
 	_, hasSecret := value["isSecret"]
-	return hasType || hasVersion || hasSecret
+	return hasType || hasSecret
 }

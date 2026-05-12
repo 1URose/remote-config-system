@@ -49,9 +49,6 @@ func ValidateEntry(entry domain.ConfigUpdateEntry) error {
 	if _, ok := supportedTypes[entry.Type]; !ok {
 		return newValidationError(fmt.Sprintf("unsupported type %q", entry.Type))
 	}
-	if entry.ExpectedVersion < 0 {
-		return newValidationError("expectedVersion must be >= 0")
-	}
 	return ValidateValue(entry.Type, entry.Value)
 }
 

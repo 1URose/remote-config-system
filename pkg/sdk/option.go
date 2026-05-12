@@ -12,7 +12,6 @@ type options struct {
 	redisAddr     string
 	redisPassword string
 	redisDB       int
-	namespace     string
 	logger        *slog.Logger
 	retryInterval time.Duration
 }
@@ -41,13 +40,6 @@ func WithRedisPassword(password string) Option {
 func WithRedisDB(db int) Option {
 	return func(opts *options) error {
 		opts.redisDB = db
-		return nil
-	}
-}
-
-func WithNamespace(namespace string) Option {
-	return func(opts *options) error {
-		opts.namespace = strings.TrimSpace(namespace)
 		return nil
 	}
 }

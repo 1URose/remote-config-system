@@ -265,7 +265,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The request is atomic for the whole payload, checks versions per item, and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.\nИмпортирует конфигурацию из JSON или YAML payload и публикует событие обновления.",
+                "description": "Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The client does not send expectedVersion; the server computes each next version. The namespace is protected by a Redis lock while the import runs. The request is atomic for the whole payload and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.\nИмпортирует конфигурацию из JSON или YAML payload и публикует событие обновления.",
                 "consumes": [
                     "application/json"
                 ],
@@ -312,8 +312,8 @@ const docTemplate = `{
                             "type": "string"
                         }
                     },
-                    "409": {
-                        "description": "version conflict",
+                    "423": {
+                        "description": "namespace is locked by another write operation",
                         "schema": {
                             "type": "string"
                         }
@@ -334,7 +334,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.\nОбновляет несколько конфигурационных параметров в namespace и публикует событие обновления.",
+                "description": "Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The client does not send expectedVersion; the server computes each next version. The namespace is protected by a Redis lock while the bulk operation runs. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.\nОбновляет несколько конфигурационных параметров в namespace и публикует событие обновления.",
                 "consumes": [
                     "application/json"
                 ],
@@ -381,8 +381,8 @@ const docTemplate = `{
                             "type": "string"
                         }
                     },
-                    "409": {
-                        "description": "version conflict",
+                    "423": {
+                        "description": "namespace is locked by another write operation",
                         "schema": {
                             "type": "string"
                         }
@@ -441,6 +441,11 @@ const docTemplate = `{
         },
         "/configs/{namespace}/{key}": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Возвращает конфигурационный параметр по namespace и key.",
                 "produces": [
                     "application/json"
@@ -472,6 +477,18 @@ const docTemplate = `{
                             "$ref": "#/definitions/domain.ConfigItem"
                         }
                     },
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
                     "404": {
                         "description": "config item not found",
                         "schema": {
@@ -487,7 +504,12 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Upserts a single config item. If the item does not exist, expectedVersion must be 0 and the item is created. If it exists, expectedVersion must match the current version. Only the addressed key is changed; other keys in the namespace are untouched. A successful write increments the item version and publishes one Redis Pub/Sub update event for that key.\nСохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.",
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upserts a single config item. The client does not send expectedVersion; the server takes a per-resource Redis lock, checks the namespace bulk lock, reads the current value atomically, creates version 1 for a new key, or stores current version + 1 for an existing key. Concurrent writes to the same key, or writes while a bulk update/import holds the namespace lock, return 423 Locked instead of 409 because the resource is temporarily locked rather than version-conflicted. Only the addressed key is changed; other keys in the namespace are untouched. A successful write publishes one Redis Pub/Sub update event for that key.\nСохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.",
                 "consumes": [
                     "application/json"
                 ],
@@ -536,8 +558,20 @@ const docTemplate = `{
                             "type": "string"
                         }
                     },
-                    "409": {
-                        "description": "version conflict",
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "423": {
+                        "description": "resource or namespace is locked by another write operation",
                         "schema": {
                             "type": "string"
                         }
@@ -551,6 +585,11 @@ const docTemplate = `{
                 }
             },
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Удаляет параметр из Redis и публикует событие обновления.",
                 "produces": [
                     "application/json"
@@ -591,6 +630,18 @@ const docTemplate = `{
                             "type": "string"
                         }
                     },
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
                     "404": {
                         "description": "config item not found",
                         "schema": {
@@ -608,6 +659,11 @@ const docTemplate = `{
         },
         "/features/{namespace}/{key}": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Возвращает состояние feature toggle по namespace и key.",
                 "produces": [
                     "application/json"
@@ -639,6 +695,18 @@ const docTemplate = `{
                             "$ref": "#/definitions/domain.FeatureToggle"
                         }
                     },
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
                     "404": {
                         "description": "config item not found",
                         "schema": {
@@ -654,7 +722,12 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Upserts a single feature toggle. If the toggle does not exist, expectedVersion must be 0 and the toggle is created. If it exists, expectedVersion must match the current version. Only the addressed toggle is changed; other toggles are untouched. A successful write increments the toggle version and publishes one Redis Pub/Sub update event for that key.\nСохраняет feature toggle в Redis и публикует событие обновления для SDK.",
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upserts a single feature toggle. The client does not send expectedVersion; the server takes a per-resource Redis lock, reads the current value atomically, creates version 1 for a new toggle, or stores current version + 1 for an existing toggle. Concurrent writes to the same toggle return 423 Locked instead of 409 because the resource is temporarily locked rather than version-conflicted. Only the addressed toggle is changed; other toggles are untouched. A successful write publishes one Redis Pub/Sub update event for that key.\nСохраняет feature toggle в Redis и публикует событие обновления для SDK.",
                 "consumes": [
                     "application/json"
                 ],
@@ -703,8 +776,20 @@ const docTemplate = `{
                             "type": "string"
                         }
                     },
-                    "409": {
-                        "description": "version conflict",
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "423": {
+                        "description": "resource is locked by another write operation",
                         "schema": {
                             "type": "string"
                         }
@@ -718,6 +803,11 @@ const docTemplate = `{
                 }
             },
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Удаляет feature toggle из Redis и публикует событие обновления.",
                 "produces": [
                     "application/json"
@@ -754,6 +844,18 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "validation error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
                         "schema": {
                             "type": "string"
                         }
@@ -801,6 +903,11 @@ const docTemplate = `{
         },
         "/metrics": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Возвращает метрики в формате Prometheus.",
                 "produces": [
                     "text/plain"
@@ -812,6 +919,18 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "Prometheus metrics",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "missing bearer token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "403": {
+                        "description": "forbidden",
                         "schema": {
                             "type": "string"
                         }
@@ -862,9 +981,6 @@ const docTemplate = `{
         "domain.ConfigImportItem": {
             "type": "object",
             "properties": {
-                "expectedVersion": {
-                    "type": "integer"
-                },
                 "isSecret": {
                     "type": "boolean",
                     "example": false
@@ -944,10 +1060,6 @@ const docTemplate = `{
         "domain.ConfigUpdateEntry": {
             "type": "object",
             "properties": {
-                "expectedVersion": {
-                    "type": "integer",
-                    "example": 0
-                },
                 "isSecret": {
                     "type": "boolean",
                     "example": false
@@ -1142,10 +1254,6 @@ const docTemplate = `{
         "http.PutConfigKeyRequest": {
             "type": "object",
             "properties": {
-                "expectedVersion": {
-                    "type": "integer",
-                    "example": 0
-                },
                 "isSecret": {
                     "type": "boolean",
                     "example": false
@@ -1170,10 +1278,6 @@ const docTemplate = `{
                 "enabled": {
                     "type": "boolean",
                     "example": true
-                },
-                "expectedVersion": {
-                    "type": "integer",
-                    "example": 0
                 },
                 "updatedBy": {
                     "type": "string",

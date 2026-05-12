@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strconv"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,10 +25,13 @@ type Client struct {
 	cache          *appcache.Memory
 	watchers       *watchRegistry
 	logger         *slog.Logger
-	namespace      string
 	retryInterval  time.Duration
 	closeCh        chan struct{}
 	wg             sync.WaitGroup
+	namespacesMu   sync.RWMutex
+	namespaces     map[string]*Namespace
+	subscriptionMu sync.Mutex
+	subscriptions  map[string]struct{}
 	started        atomic.Bool
 	closed         atomic.Bool
 	redisConnected atomic.Bool
@@ -56,9 +60,6 @@ func NewClient(options ...Option) (*Client, error) {
 	if cfg.redisAddr == "" {
 		return nil, ErrRedisAddrRequired
 	}
-	if cfg.namespace == "" {
-		return nil, ErrNamespaceRequired
-	}
 
 	redisClient := redisstorage.NewClient(redisstorage.ClientConfig{
 		Addr:     cfg.redisAddr,
@@ -74,10 +75,50 @@ func NewClient(options ...Option) (*Client, error) {
 		cache:          appcache.New(),
 		watchers:       newWatchRegistry(),
 		logger:         cfg.logger,
-		namespace:      cfg.namespace,
 		retryInterval:  cfg.retryInterval,
 		closeCh:        make(chan struct{}),
+		namespaces:     make(map[string]*Namespace),
+		subscriptions:  make(map[string]struct{}),
 	}, nil
+}
+
+func (c *Client) Namespace(name string) *Namespace {
+	namespace := strings.TrimSpace(name)
+
+	c.namespacesMu.Lock()
+	defer c.namespacesMu.Unlock()
+
+	if ns, ok := c.namespaces[namespace]; ok {
+		return ns
+	}
+	ns := &Namespace{
+		client:    c,
+		namespace: namespace,
+	}
+	c.namespaces[namespace] = ns
+	return ns
+}
+
+func (c *Client) AttachNamespace(ctx context.Context, name string) (*Namespace, error) {
+	namespace := strings.TrimSpace(name)
+	if namespace == "" {
+		return nil, ErrNamespaceRequired
+	}
+	if c.closed.Load() {
+		return nil, ErrClientClosed
+	}
+
+	ns := c.Namespace(namespace)
+	if err := c.reloadNamespaceWithContext(ctx, namespace); err != nil {
+		return ns, err
+	}
+	if c.closed.Load() {
+		return ns, ErrClientClosed
+	}
+	if c.started.Load() {
+		c.startSubscription(namespace)
+	}
+	return ns, nil
 }
 
 func (c *Client) Start(ctx context.Context) error {
@@ -88,9 +129,19 @@ func (c *Client) Start(ctx context.Context) error {
 	if !c.started.CompareAndSwap(false, true) {
 		return ErrClientAlreadyStarted
 	}
-	if err := c.reloadWithContext(ctx); err != nil {
-		c.started.Store(false)
-		return err
+
+	namespaces := c.namespaceNames()
+	for _, namespace := range namespaces {
+		if namespace == "" {
+			c.started.Store(false)
+			return ErrNamespaceRequired
+		}
+	}
+	for _, namespace := range namespaces {
+		if err := c.reloadNamespaceWithContext(ctx, namespace); err != nil {
+			c.started.Store(false)
+			return err
+		}
 	}
 
 	go func() {
@@ -98,8 +149,9 @@ func (c *Client) Start(ctx context.Context) error {
 		_ = c.Close()
 	}()
 
-	c.wg.Add(1)
-	go c.runSubscription()
+	for _, namespace := range namespaces {
+		c.startSubscription(namespace)
+	}
 	return nil
 }
 
@@ -107,86 +159,11 @@ func (c *Client) Close() error {
 	if c.closed.Swap(true) {
 		return nil
 	}
+	c.subscriptionMu.Lock()
 	close(c.closeCh)
+	c.subscriptionMu.Unlock()
 	c.wg.Wait()
 	return c.redisClient.Close()
-}
-
-func (c *Client) Get(key string) (Value, bool) {
-	item, ok := c.cache.Get(c.namespace, key)
-	if !ok {
-		return Value{}, false
-	}
-	return newValue(item), true
-}
-
-func (c *Client) GetRaw(key string) (Value, bool) {
-	return c.Get(key)
-}
-
-func (c *Client) GetString(key string) (string, bool) {
-	value, ok := c.Get(key)
-	if !ok {
-		return "", false
-	}
-	return value.Raw, true
-}
-
-func (c *Client) GetBool(key string) (bool, bool) {
-	value, ok := c.GetString(key)
-	if !ok {
-		return false, false
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return false, false
-	}
-	return parsed, true
-}
-
-func (c *Client) GetInt(key string) (int, bool) {
-	value, ok := c.GetString(key)
-	if !ok {
-		return 0, false
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, false
-	}
-	return parsed, true
-}
-
-func (c *Client) Watch(key string, cb func(Value)) {
-	c.watchers.addKeyWatch(c.namespace, key, cb)
-}
-
-func (c *Client) WatchNamespace(cb func([]Value)) {
-	c.watchers.addNamespaceWatch(c.namespace, cb)
-}
-
-func (c *Client) Flush() error {
-	c.flushes.Add(1)
-	backup := c.cache.Snapshot(c.namespace)
-	featureBackup := c.cache.SnapshotFeatures(c.namespace)
-	c.cache.DeleteNamespace(c.namespace)
-	if err := c.Reload(); err != nil {
-		if backup != nil {
-			c.cache.ReplaceNamespace(c.namespace, backup)
-		}
-		if featureBackup != nil {
-			c.cache.ReplaceFeatures(c.namespace, featureBackup)
-		}
-		return err
-	}
-	return nil
-}
-
-func (c *Client) Reload() error {
-	return c.reloadWithContext(context.Background())
-}
-
-func (c *Client) ReloadKeys(keys []string) error {
-	return c.reloadKeysWithContext(context.Background(), keys)
 }
 
 func (c *Client) CacheSize() int {
@@ -208,7 +185,52 @@ func (c *Client) Stats() Stats {
 	}
 }
 
-func (c *Client) runSubscription() {
+func (c *Client) namespaceNames() []string {
+	c.namespacesMu.RLock()
+	defer c.namespacesMu.RUnlock()
+
+	namespaces := make([]string, 0, len(c.namespaces))
+	for namespace := range c.namespaces {
+		namespaces = append(namespaces, namespace)
+	}
+	sort.Strings(namespaces)
+	return namespaces
+}
+
+func (c *Client) startSubscription(namespace string) {
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
+
+	if c.closed.Load() {
+		return
+	}
+	if _, ok := c.subscriptions[namespace]; ok {
+		return
+	}
+
+	c.subscriptions[namespace] = struct{}{}
+	c.wg.Add(1)
+	go c.runSubscription(namespace)
+}
+
+func (c *Client) flushNamespace(namespace string) error {
+	c.flushes.Add(1)
+	backup := c.cache.Snapshot(namespace)
+	featureBackup := c.cache.SnapshotFeatures(namespace)
+	c.cache.DeleteNamespace(namespace)
+	if err := c.reloadNamespaceWithContext(context.Background(), namespace); err != nil {
+		if backup != nil {
+			c.cache.ReplaceNamespace(namespace, backup)
+		}
+		if featureBackup != nil {
+			c.cache.ReplaceFeatures(namespace, featureBackup)
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *Client) runSubscription(namespace string) {
 	defer c.wg.Done()
 
 	for {
@@ -219,11 +241,11 @@ func (c *Client) runSubscription() {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		subscription := c.pubsub.Subscribe(ctx, c.namespace)
+		subscription := c.pubsub.Subscribe(ctx, namespace)
 		channel := subscription.Channel()
 
-		if err := c.Reload(); err != nil {
-			c.logger.Warn("initial reload after subscribe failed", "namespace", c.namespace, "error", err)
+		if err := c.reloadNamespaceWithContext(context.Background(), namespace); err != nil {
+			c.logger.Warn("initial reload after subscribe failed", "namespace", namespace, "error", err)
 		}
 
 		subscriptionClosed := false
@@ -241,7 +263,16 @@ func (c *Client) runSubscription() {
 
 				event, err := c.pubsub.ParseEvent(msg.Payload)
 				if err != nil {
-					c.logger.Warn("invalid update event", "namespace", c.namespace, "error", err)
+					c.logger.Warn("invalid update event", "namespace", namespace, "error", err)
+					continue
+				}
+
+				eventNamespace := strings.TrimSpace(event.Namespace)
+				if eventNamespace == "" {
+					eventNamespace = namespace
+				}
+				if eventNamespace != namespace {
+					c.logger.Warn("event namespace mismatch", "subscription_namespace", namespace, "event_namespace", eventNamespace)
 					continue
 				}
 
@@ -252,20 +283,20 @@ func (c *Client) runSubscription() {
 
 				switch event.Operation {
 				case "flush":
-					if err := c.Reload(); err != nil {
-						c.logger.Warn("flush reload failed", "namespace", c.namespace, "error", err)
+					if err := c.reloadNamespaceWithContext(context.Background(), namespace); err != nil {
+						c.logger.Warn("flush reload failed", "namespace", namespace, "error", err)
 					}
 				case "updated":
 					if len(event.Keys) == 0 {
 						continue
 					}
-					if err := c.reloadResourceKeys(resource, event.Keys); err != nil {
-						c.logger.Warn("point reload failed", "namespace", c.namespace, "keys", event.Keys, "error", err)
+					if err := c.reloadResourceKeys(namespace, resource, event.Keys); err != nil {
+						c.logger.Warn("point reload failed", "namespace", namespace, "keys", event.Keys, "error", err)
 					}
 				case "deleted":
-					c.deleteResourceKeys(resource, event.Keys)
+					c.deleteResourceKeys(namespace, resource, event.Keys)
 				default:
-					c.logger.Warn("unknown event operation", "namespace", c.namespace, "operation", event.Operation)
+					c.logger.Warn("unknown event operation", "namespace", namespace, "operation", event.Operation)
 				}
 			case <-time.After(c.retryInterval):
 				if err := c.ping(); err != nil {
@@ -277,7 +308,7 @@ func (c *Client) runSubscription() {
 		cancel()
 		_ = subscription.Close()
 		c.redisConnected.Store(false)
-		c.logger.Warn("redis subscription lost, continuing with last-known-good cache", "namespace", c.namespace)
+		c.logger.Warn("redis subscription lost, continuing with last-known-good cache", "namespace", namespace)
 
 		select {
 		case <-c.closeCh:
@@ -285,13 +316,13 @@ func (c *Client) runSubscription() {
 		case <-time.After(c.retryInterval):
 		}
 
-		if err := c.awaitReconnect(); err != nil && !errors.Is(err, context.Canceled) {
-			c.logger.Warn("reconnect loop interrupted", "namespace", c.namespace, "error", err)
+		if err := c.awaitReconnect(namespace); err != nil && !errors.Is(err, context.Canceled) {
+			c.logger.Warn("reconnect loop interrupted", "namespace", namespace, "error", err)
 		}
 	}
 }
 
-func (c *Client) awaitReconnect() error {
+func (c *Client) awaitReconnect(namespace string) error {
 	for {
 		select {
 		case <-c.closeCh:
@@ -302,87 +333,87 @@ func (c *Client) awaitReconnect() error {
 			}
 			c.redisConnected.Store(true)
 			c.reconnects.Add(1)
-			if err := c.Reload(); err != nil {
-				c.logger.Warn("reload after reconnect failed", "namespace", c.namespace, "error", err)
+			if err := c.reloadNamespaceWithContext(context.Background(), namespace); err != nil {
+				c.logger.Warn("reload after reconnect failed", "namespace", namespace, "error", err)
 				continue
 			}
-			c.logger.Info("redis connection restored", "namespace", c.namespace)
+			c.logger.Info("redis connection restored", "namespace", namespace)
 			return nil
 		}
 	}
 }
 
-func (c *Client) reloadWithContext(parent context.Context) error {
+func (c *Client) reloadNamespaceWithContext(parent context.Context, namespace string) error {
 	parent = normalizeContext(parent)
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
-	items, err := c.storage.GetNamespace(ctx, c.namespace)
+	items, err := c.storage.GetNamespace(ctx, namespace)
 	if err != nil {
 		c.redisConnected.Store(false)
 		return err
 	}
-	features, err := c.featureStorage.GetNamespace(ctx, c.namespace)
+	features, err := c.featureStorage.GetNamespace(ctx, namespace)
 	if err != nil {
 		c.redisConnected.Store(false)
 		return err
 	}
 	c.redisConnected.Store(true)
 	c.reloads.Add(1)
-	c.cache.ReplaceNamespace(c.namespace, items)
-	c.cache.ReplaceFeatures(c.namespace, features)
-	c.watchers.notify(c.namespace, newValues(items))
+	c.cache.ReplaceNamespace(namespace, items)
+	c.cache.ReplaceFeatures(namespace, features)
+	c.watchers.notify(namespace, newValues(items))
 	return nil
 }
 
-func (c *Client) reloadKeysWithContext(parent context.Context, keys []string) error {
+func (c *Client) reloadKeysWithContext(parent context.Context, namespace string, keys []string) error {
 	parent = normalizeContext(parent)
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
-	items, err := c.storage.GetKeys(ctx, c.namespace, keys)
+	items, err := c.storage.GetKeys(ctx, namespace, keys)
 	if err != nil {
 		c.redisConnected.Store(false)
 		return err
 	}
 	c.redisConnected.Store(true)
 	c.pointReloads.Add(1)
-	changed := c.cache.UpdateKeys(c.namespace, items)
-	c.watchers.notify(c.namespace, newValues(changed))
+	changed := c.cache.UpdateKeys(namespace, items)
+	c.watchers.notify(namespace, newValues(changed))
 	return nil
 }
 
-func (c *Client) reloadFeatureKeysWithContext(parent context.Context, keys []string) error {
+func (c *Client) reloadFeatureKeysWithContext(parent context.Context, namespace string, keys []string) error {
 	parent = normalizeContext(parent)
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
-	items, err := c.featureStorage.GetKeys(ctx, c.namespace, keys)
+	items, err := c.featureStorage.GetKeys(ctx, namespace, keys)
 	if err != nil {
 		c.redisConnected.Store(false)
 		return err
 	}
 	c.redisConnected.Store(true)
 	c.pointReloads.Add(1)
-	c.cache.UpdateFeatures(c.namespace, items)
+	c.cache.UpdateFeatures(namespace, items)
 	return nil
 }
 
-func (c *Client) reloadResourceKeys(resource string, keys []string) error {
+func (c *Client) reloadResourceKeys(namespace, resource string, keys []string) error {
 	switch resource {
 	case "feature":
-		return c.reloadFeatureKeysWithContext(context.Background(), keys)
+		return c.reloadFeatureKeysWithContext(context.Background(), namespace, keys)
 	default:
-		return c.ReloadKeys(keys)
+		return c.reloadKeysWithContext(context.Background(), namespace, keys)
 	}
 }
 
-func (c *Client) deleteResourceKeys(resource string, keys []string) {
+func (c *Client) deleteResourceKeys(namespace, resource string, keys []string) {
 	switch resource {
 	case "feature":
-		c.cache.DeleteFeatures(c.namespace, keys)
+		c.cache.DeleteFeatures(namespace, keys)
 	default:
-		c.cache.DeleteKeys(c.namespace, keys)
+		c.cache.DeleteKeys(namespace, keys)
 	}
 }
 

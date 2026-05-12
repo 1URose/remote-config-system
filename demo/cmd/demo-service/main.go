@@ -45,13 +45,13 @@ func run(ctx context.Context) error {
 
 	client, err := sdk.NewClient(
 		sdk.WithRedisAddr("localhost:6379"),
-		sdk.WithNamespace(namespace),
 	)
 	if err != nil {
 		return fmt.Errorf("create sdk client: %w", err)
 	}
 	log.Println("sdk client created")
 	defer func() { _ = client.Close() }()
+	config := client.Namespace(namespace)
 
 	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("start sdk client: %w", err)
@@ -65,7 +65,7 @@ func run(ctx context.Context) error {
 
 	server := &http.Server{
 		Addr:    httpAddr,
-		Handler: newHandler(client, webDir),
+		Handler: newHandler(config, webDir),
 	}
 
 	go func() {
@@ -84,47 +84,47 @@ func run(ctx context.Context) error {
 	return err
 }
 
-func newHandler(client *sdk.Client, webDir string) http.Handler {
+func newHandler(config *sdk.Namespace, webDir string) http.Handler {
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.Dir(webDir))
 
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("state requested")
-		writeJSON(w, http.StatusOK, readState(client))
+		writeJSON(w, http.StatusOK, readState(config))
 	})
 	mux.Handle("GET /", fileServer)
 
 	return mux
 }
 
-func readState(client *sdk.Client) stateResponse {
+func readState(config *sdk.Namespace) stateResponse {
 	return stateResponse{
-		Title:            getStringOrDefault(client, "app.title", "Remote Config Demo"),
-		Theme:            getStringOrDefault(client, "app.theme", "light"),
-		DiscountPercent:  getIntOrDefault(client, "discount.percent", 10),
-		NewBannerEnabled: getFeatureOrDefault(client, "new_banner", true),
-		CheckoutEnabled:  getFeatureOrDefault(client, "checkout_enabled", false),
+		Title:            getStringOrDefault(config, "app.title", "Remote Config Demo"),
+		Theme:            getStringOrDefault(config, "app.theme", "light"),
+		DiscountPercent:  getIntOrDefault(config, "discount.percent", 10),
+		NewBannerEnabled: getFeatureOrDefault(config, "new_banner", true),
+		CheckoutEnabled:  getFeatureOrDefault(config, "checkout_enabled", false),
 	}
 }
 
-func getStringOrDefault(client *sdk.Client, key, fallback string) string {
-	value, ok := client.GetString(key)
+func getStringOrDefault(config *sdk.Namespace, key, fallback string) string {
+	value, ok := config.GetString(key)
 	if !ok || value == "" {
 		return fallback
 	}
 	return value
 }
 
-func getIntOrDefault(client *sdk.Client, key string, fallback int) int {
-	value, ok := client.GetInt(key)
+func getIntOrDefault(config *sdk.Namespace, key string, fallback int) int {
+	value, ok := config.GetInt(key)
 	if !ok {
 		return fallback
 	}
 	return value
 }
 
-func getFeatureOrDefault(client *sdk.Client, key string, fallback bool) bool {
-	feature, ok := client.GetFeature(key)
+func getFeatureOrDefault(config *sdk.Namespace, key string, fallback bool) bool {
+	feature, ok := config.GetFeature(key)
 	if !ok {
 		return fallback
 	}

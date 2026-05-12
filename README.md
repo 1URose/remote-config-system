@@ -54,7 +54,15 @@ audit:{namespace}
 - `DELETE /features/{namespace}/{key}?updatedBy=...`
 - `GET /health`
 
-В репозитории также остались legacy endpoint'ы с JWT (`/config/update`, `/config/import`, `/config/export`, `/audit`, `/cache/flush`) для совместимости с более ранней версией.
+Admin API использует JWT Bearer token и роли `reader`, `editor`, `owner`, `admin`. Legacy endpoint'ы (`/config/update`, `/config/import`, `/config/export`, `/audit`, `/cache/flush`) остались для совместимости с более ранней версией.
+
+Клиенты больше не передают `expectedVersion`. Сервер сам вычисляет версию: при создании ставит `1`, при обновлении - `current+1`. Single-key обновления защищены per-resource Redis lock и при конкурентной записи возвращают `423 Locked`, а не `409`, потому что это временная блокировка ресурса. Bulk `/config/update` и `/config/import` работают как `merge only`, не удаляют неуказанные ключи и защищены namespace-level lock.
+
+Lock keys и TTL:
+
+- `config_write_lock:{namespace}:{key}` - single config write, TTL 30 секунд;
+- `feature_write_lock:{namespace}:{key}` - single feature write, TTL 30 секунд;
+- `config_bulk_lock:{namespace}` - bulk update/import, TTL 30 секунд.
 
 ### Пример запроса для config
 
@@ -62,7 +70,6 @@ audit:{namespace}
 {
   "value": "15",
   "type": "int",
-  "expectedVersion": 0,
   "updatedBy": "admin@example.com"
 }
 ```
@@ -72,7 +79,6 @@ audit:{namespace}
 ```json
 {
   "enabled": true,
-  "expectedVersion": 0,
   "updatedBy": "admin@example.com"
 }
 ```
@@ -92,19 +98,20 @@ import (
 func main() {
 	client, err := sdk.NewClient(
 		sdk.WithRedisAddr("localhost:6379"),
-		sdk.WithNamespace("payments"),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
 
+	payments := client.Namespace("payments")
+
 	if err := client.Start(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 
-	timeout, _ := client.GetInt("timeout")
-	featureOn := client.IsFeatureEnabled("new-checkout")
+	timeout, _ := payments.GetInt("timeout")
+	featureOn := payments.IsFeatureEnabled("new-checkout")
 
 	log.Printf("timeout=%d feature=%v", timeout, featureOn)
 }
@@ -114,16 +121,45 @@ func main() {
 
 ```go
 func NewClient(options ...Option) (*Client, error)
+func WithRedisAddr(addr string) Option
+func WithRedisPassword(password string) Option
+func WithRedisDB(db int) Option
+func WithLogger(logger *slog.Logger) Option
+func WithRetryInterval(interval time.Duration) Option
 
+func (c *Client) Namespace(name string) *Namespace
+func (c *Client) AttachNamespace(ctx context.Context, name string) (*Namespace, error)
 func (c *Client) Start(ctx context.Context) error
 func (c *Client) Close() error
+func (c *Client) CacheSize() int
+func (c *Client) RedisConnected() bool
+func (c *Client) Stats() Stats
 
-func (c *Client) Get(key string) (Value, bool)
-func (c *Client) GetString(key string) (string, bool)
-func (c *Client) GetBool(key string) (bool, bool)
-func (c *Client) GetInt(key string) (int, bool)
+type Stats struct {
+	Reloads        int64
+	PointReloads   int64
+	Flushes        int64
+	Reconnects     int64
+	RedisConnected bool
+	CacheSize      int
+}
 
-func (c *Client) IsFeatureEnabled(key string) bool
+func (ns *Namespace) Get(key string) (Value, bool)
+func (ns *Namespace) GetRaw(key string) (Value, bool)
+func (ns *Namespace) GetString(key string) (string, bool)
+func (ns *Namespace) GetBool(key string) (bool, bool)
+func (ns *Namespace) GetInt(key string) (int, bool)
+func (ns *Namespace) GetFeature(key string) (Feature, bool)
+func (ns *Namespace) IsFeatureEnabled(key string) bool
+
+func (ns *Namespace) Watch(key string, cb func(Value))
+func (ns *Namespace) WatchNamespace(cb func([]Value))
+func (ns *Namespace) Reload() error
+func (ns *Namespace) ReloadKeys(keys []string) error
+func (ns *Namespace) Flush() error
+
+func (v Value) Bool() (bool, error)
+func (v Value) Int() (int, error)
 ```
 
 ## Полный запуск системы
@@ -203,7 +239,7 @@ curl http://localhost:8081/api/state
 Он использует SDK по стандартной схеме:
 
 1. Создает клиент через `sdk.NewClient(...)`.
-2. Указывает namespace через `sdk.WithNamespace("demo-service")`.
+2. Регистрирует namespace через `client.Namespace("demo-service")`.
 3. Один раз запускает SDK через `client.Start(ctx)`.
 4. Читает значения только через публичные методы SDK.
 5. Отдает эти значения через `GET /api/state`.
@@ -219,29 +255,31 @@ Admin API -> запись в Redis -> событие Redis Pub/Sub -> подпи
 Если нужно использовать SDK вне demo-проекта:
 
 1. Импортировать `github.com/1URose/remote-config-system/pkg/sdk`.
-2. Создать один клиент на один namespace.
-3. Вызвать `Start(ctx)` при старте сервиса.
-4. Читать значения только через API SDK.
-5. Использовать в Admin API тот же namespace, который передан в `sdk.WithNamespace(...)`.
+2. Создать один клиент для всех нужных namespace.
+3. Зарегистрировать namespace через `client.Namespace(...)` до `Start(ctx)`.
+4. Вызвать `Start(ctx)` при старте сервиса.
+5. Читать значения через namespace-scoped API SDK.
+6. Использовать в Admin API те же namespace, которые зарегистрированы в SDK-клиенте.
 
 Минимальный пример:
 
 ```go
 client, err := sdk.NewClient(
 	sdk.WithRedisAddr("localhost:6379"),
-	sdk.WithNamespace("your-service"),
 )
 if err != nil {
 	log.Fatal(err)
 }
 defer client.Close()
 
+app := client.Namespace("your-service")
+
 if err := client.Start(context.Background()); err != nil {
 	log.Fatal(err)
 }
 
-title, _ := client.GetString("app.title")
-featureOn := client.IsFeatureEnabled("new-feature")
+title, _ := app.GetString("app.title")
+featureOn := app.IsFeatureEnabled("new-feature")
 ```
 
 ### Полный demo-сценарий
@@ -342,20 +380,28 @@ http://localhost:8080/swagger/index.html
 
 ## Ручной сценарий hot-reload
 
+Сначала получите JWT для Admin API:
+
+```bash
+TOKEN="$(go run ./cmd/token -subject admin@example.com)"
+```
+
 1. Создать config-значение:
 
 ```bash
 curl -X PUT http://localhost:8080/configs/payments/timeout \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"value":"15","type":"int","expectedVersion":0,"updatedBy":"admin@example.com"}'
+  -d '{"value":"15","type":"int","updatedBy":"admin@example.com"}'
 ```
 
 2. Создать feature toggle:
 
 ```bash
 curl -X PUT http://localhost:8080/features/payments/new-checkout \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"enabled":true,"expectedVersion":0,"updatedBy":"admin@example.com"}'
+  -d '{"enabled":true,"updatedBy":"admin@example.com"}'
 ```
 
 3. Запустить приложение, использующее SDK с namespace `payments`.
@@ -364,8 +410,9 @@ curl -X PUT http://localhost:8080/features/payments/new-checkout \
 
 ```bash
 curl -X PUT http://localhost:8080/configs/payments/timeout \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"value":"30","type":"int","expectedVersion":1,"updatedBy":"admin@example.com"}'
+  -d '{"value":"30","type":"int","updatedBy":"admin@example.com"}'
 ```
 
 Поток обновления:

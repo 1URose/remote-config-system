@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1URose/remote-config-system/internal/domain"
@@ -15,6 +16,7 @@ type Storage interface {
 	GetNamespace(ctx context.Context, namespace string) ([]domain.ConfigItem, error)
 	GetKey(ctx context.Context, namespace, key string) (domain.ConfigItem, error)
 	GetKeys(ctx context.Context, namespace string, keys []string) ([]domain.ConfigItem, error)
+	UpsertKey(ctx context.Context, namespace, key, value, kind string, isSecret bool, updatedBy, requestID string) (domain.ConfigItem, error)
 	Update(ctx context.Context, req domain.ConfigUpdateRequest, requestID string) ([]domain.ConfigItem, error)
 	DeleteKey(ctx context.Context, namespace, key, updatedBy, requestID string) error
 	GetAudit(ctx context.Context, namespace string) ([]domain.AuditRecord, error)
@@ -83,9 +85,6 @@ func (s *Service) Update(ctx context.Context, req domain.ConfigUpdateRequest, re
 
 	if err != nil {
 		s.metrics.IncFailedUpdates()
-		if _, ok := err.(*domain.VersionConflictError); ok {
-			s.metrics.IncVersionConflicts()
-		}
 		return nil, err
 	}
 
@@ -93,27 +92,26 @@ func (s *Service) Update(ctx context.Context, req domain.ConfigUpdateRequest, re
 	return items, nil
 }
 
-func (s *Service) UpsertKey(ctx context.Context, namespace, key, value, kind string, expectedVersion int64, isSecret bool, updatedBy, requestID string) (domain.ConfigItem, error) {
-	items, err := s.Update(ctx, domain.ConfigUpdateRequest{
-		Namespace: namespace,
-		UpdatedBy: updatedBy,
-		Entries: []domain.ConfigUpdateEntry{
-			{
-				Key:             key,
-				Value:           value,
-				Type:            kind,
-				ExpectedVersion: expectedVersion,
-				IsSecret:        isSecret,
-			},
-		},
-	}, requestID)
-	if err != nil {
-		return domain.ConfigItem{}, err
+func (s *Service) UpsertKey(ctx context.Context, namespace, key, value, kind string, isSecret bool, updatedBy, requestID string) (domain.ConfigItem, error) {
+	if strings.TrimSpace(namespace) == "" {
+		return domain.ConfigItem{}, newValidationError("namespace is required")
 	}
-	if len(items) != 1 {
-		return domain.ConfigItem{}, fmt.Errorf("expected single updated item, got %d", len(items))
+	if strings.TrimSpace(key) == "" {
+		return domain.ConfigItem{}, newValidationError("key is required")
 	}
-	return items[0], nil
+	if strings.TrimSpace(updatedBy) == "" {
+		return domain.ConfigItem{}, newValidationError("updatedBy is required")
+	}
+	entry := domain.ConfigUpdateEntry{
+		Key:      key,
+		Value:    value,
+		Type:     kind,
+		IsSecret: isSecret,
+	}
+	if err := ValidateEntry(entry); err != nil {
+		return domain.ConfigItem{}, newValidationError(fmt.Sprintf("key %q: %v", key, err))
+	}
+	return s.storage.UpsertKey(ctx, namespace, key, value, kind, isSecret, updatedBy, requestID)
 }
 
 func (s *Service) DeleteKey(ctx context.Context, namespace, key, updatedBy, requestID string) error {

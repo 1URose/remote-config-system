@@ -11,7 +11,7 @@ type Storage interface {
 	GetNamespace(ctx context.Context, namespace string) ([]domain.FeatureToggle, error)
 	GetKey(ctx context.Context, namespace, key string) (domain.FeatureToggle, error)
 	GetKeys(ctx context.Context, namespace string, keys []string) ([]domain.FeatureToggle, error)
-	Upsert(ctx context.Context, namespace, key string, enabled bool, expectedVersion int64, updatedBy, requestID string) (domain.FeatureToggle, error)
+	Upsert(ctx context.Context, namespace, key string, enabled bool, updatedBy, requestID string) (domain.FeatureToggle, error)
 	DeleteKey(ctx context.Context, namespace, key, updatedBy, requestID string) error
 }
 
@@ -31,7 +31,7 @@ func (s *Service) GetNamespace(ctx context.Context, namespace string) ([]domain.
 	return s.storage.GetNamespace(ctx, namespace)
 }
 
-func (s *Service) Upsert(ctx context.Context, namespace, key string, enabled bool, expectedVersion int64, updatedBy, requestID string) (domain.FeatureToggle, error) {
+func (s *Service) Upsert(ctx context.Context, namespace, key string, enabled bool, updatedBy, requestID string) (domain.FeatureToggle, error) {
 	if strings.TrimSpace(namespace) == "" {
 		return domain.FeatureToggle{}, domain.NewValidationError("namespace is required")
 	}
@@ -41,10 +41,7 @@ func (s *Service) Upsert(ctx context.Context, namespace, key string, enabled boo
 	if strings.TrimSpace(updatedBy) == "" {
 		return domain.FeatureToggle{}, domain.NewValidationError("updatedBy is required")
 	}
-	if expectedVersion < 0 {
-		return domain.FeatureToggle{}, domain.NewValidationError("expectedVersion must be >= 0")
-	}
-	return s.storage.Upsert(ctx, namespace, key, enabled, expectedVersion, updatedBy, requestID)
+	return s.storage.Upsert(ctx, namespace, key, enabled, updatedBy, requestID)
 }
 
 func (s *Service) DeleteKey(ctx context.Context, namespace, key, updatedBy, requestID string) error {

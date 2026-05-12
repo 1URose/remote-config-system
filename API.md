@@ -92,28 +92,13 @@ audit:{namespace}
 
 ## Авторизация
 
-В Admin API есть две группы ручек:
+Публичные ручки без JWT:
 
-1. Публичные per-key ручки без JWT:
-   - `GET /configs/{namespace}/{key}`
-   - `PUT /configs/{namespace}/{key}`
-   - `DELETE /configs/{namespace}/{key}`
-   - `GET /features/{namespace}/{key}`
-   - `PUT /features/{namespace}/{key}`
-   - `DELETE /features/{namespace}/{key}`
-   - `GET /health`
-   - `GET /metrics`
-   - `GET /docs`
-   - `GET /swagger/*`
+- `GET /health`
+- `GET /docs`
+- `GET /swagger/*`
 
-2. Защищенные legacy и aggregate ручки с JWT:
-   - `GET /configs`
-   - `GET /config`
-   - `POST /config/update`
-   - `POST /config/import`
-   - `GET /config/export`
-   - `GET /audit`
-   - `POST /cache/flush`
+Остальные API-ручки требуют JWT Bearer token.
 
 Роли:
 
@@ -134,6 +119,12 @@ reader < editor < owner < admin
 TOKEN="$(go run ./cmd/token -subject admin@example.com)"
 ```
 
+Чтобы вывести в консоль готовое значение с префиксом `Bearer` и скопировать его:
+
+```bash
+echo "Bearer $(go run ./cmd/token -subject admin@example.com)"
+```
+
 По умолчанию `cmd/token` выдает роль `admin`.
 
 Для защищенных ручек передавайте:
@@ -148,10 +139,24 @@ TOKEN="$(go run ./cmd/token -subject admin@example.com)"
 - если `updatedBy` передано, оно должно совпадать с `sub` из JWT;
 - иначе вернется `400 updatedBy must match token subject`.
 
-Особенность public per-key endpoints:
+Матрица прав:
 
-- JWT не нужен;
-- если `updatedBy` не передано, API подставит `"api"`.
+| Ручка | Минимальная роль |
+|---|---|
+| `GET /metrics` | `reader` |
+| `GET /configs/{namespace}/{key}` | `reader` |
+| `GET /features/{namespace}/{key}` | `reader` |
+| `GET /configs` | `reader` |
+| `GET /config` | `reader` |
+| `GET /config/export` | `reader` |
+| `GET /audit` | `reader` |
+| `PUT /configs/{namespace}/{key}` | `editor` |
+| `PUT /features/{namespace}/{key}` | `editor` |
+| `POST /config/update` | `editor` |
+| `DELETE /configs/{namespace}/{key}` | `owner` |
+| `DELETE /features/{namespace}/{key}` | `owner` |
+| `POST /config/import` | `owner` |
+| `POST /cache/flush` | `owner` |
 
 ## Ошибки
 
@@ -160,7 +165,6 @@ TOKEN="$(go run ./cmd/token -subject admin@example.com)"
 - `400 Bad Request`
   - отсутствует обязательный параметр;
   - неверный `type`;
-  - `expectedVersion < 0`;
   - `updatedBy` не совпадает с `sub` токена;
   - неверный формат JSON/YAML;
   - невалидный `bool` / `int` / `float` / `json`.
@@ -171,23 +175,28 @@ TOKEN="$(go run ./cmd/token -subject admin@example.com)"
   - у токена недостаточно прав.
 - `404 Not Found`
   - ключ не найден.
-- `409 Conflict`
-  - конфликт версий.
+- `423 Locked`
+  - config/feature resource уже заблокирован другой single-key write-операцией;
+  - config namespace уже заблокирован bulk-операцией `/config/update` или `/config/import`;
+  - выбран вместо `409`, потому что это временная блокировка ресурса, а не конфликт версии.
 - `500 Internal Server Error`
   - ошибка Redis или другая внутренняя ошибка.
 
-Пример конфликта версий:
+Версионирование вычисляется только сервером:
 
-```text
-version conflict for key "discount.percent": expected=1 current=2
-```
+- клиент больше не передает `expectedVersion`;
+- при создании нового значения версия становится `1`;
+- при обновлении существующего значения версия становится `current + 1`;
+- single-key ручки защищены per-resource Redis lock и при конкурентной записи возвращают `423 Locked`;
+- bulk-ручки используют `merge only` и namespace-level lock.
 
-Версионирование работает optimistic-lock способом:
+Redis locks:
 
-- при создании нового значения текущая версия считается `0`;
-- для успешного создания нужно передать `expectedVersion: 0`;
-- при успешной записи версия увеличивается на `1`;
-- если переданная версия не совпадает с текущей, запись не выполняется.
+- `config_write_lock:{namespace}:{key}` - single-key config write, TTL 30 секунд;
+- `feature_write_lock:{namespace}:{key}` - single-key feature write, TTL 30 секунд;
+- `config_bulk_lock:{namespace}` - bulk `/config/update` и `/config/import`, TTL 30 секунд.
+
+Все locks берутся через `SET NX` с TTL и освобождаются Lua script с проверкой token. Single config write также учитывает `config_bulk_lock:{namespace}` и возвращает `423 Locked`, если namespace занят bulk-операцией.
 
 ## Конфигурации
 
@@ -206,7 +215,7 @@ version conflict for key "discount.percent": expected=1 current=2
 - Назначение: создать новый config-параметр или обновить существующий.
 - Метод: `PUT`
 - URL: `/configs/{namespace}/{key}`
-- Авторизация: не требуется.
+- Авторизация: Bearer token с ролью `editor` и выше.
 
 Path params:
 
@@ -219,19 +228,20 @@ Body:
   - для `string` пустая строка допустима;
   - для `bool`, `int`, `float`, `json` пустая строка приведет к `400`.
 - `type` - обязательный.
-- `expectedVersion` - необязательный технически, но практически обязателен для предсказуемых обновлений; если не передан, будет `0`.
 - `isSecret` - необязательный, по умолчанию `false`.
 - `updatedBy` - необязательный, по умолчанию `"api"`.
+
+`expectedVersion` в запросе не передается. Версия вычисляется сервером атомарно: новая запись получает `version=1`, существующая - `current+1`. Перед записью API проверяет `config_bulk_lock:{namespace}`, затем берет `config_write_lock:{namespace}:{key}`. Если namespace или key уже заблокирован другой write-операцией, запрос получает `423 Locked`, значение не меняется и Pub/Sub событие не публикуется.
 
 Пример запроса:
 
 ```bash
 curl -X PUT "http://localhost:8080/configs/demo-service/discount.percent" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "25",
     "type": "int",
-    "expectedVersion": 0,
     "updatedBy": "admin@example.com"
   }'
 ```
@@ -258,28 +268,32 @@ curl -X PUT "http://localhost:8080/configs/demo-service/discount.percent" \
 - `400 invalid bool value: ...`
 - `400 invalid float value: ...`
 - `400 invalid json value: ...`
-- `409 version conflict ...`
+- `423 config "namespace"/"key" is locked by another write operation`
+- `423 namespace "..." is locked by another write operation`
 
 Что происходит внутри:
 
-1. API валидирует `type`, `value` и `expectedVersion`.
-2. В Redis через Lua script обновляется только один ключ.
-3. Ключ добавляется в `config_keys:{namespace}`.
-4. Для config записывается audit record в `audit:{namespace}`.
-5. В канал `events:{namespace}` публикуется одно событие `operation=updated`, `resource=config`, `keys=["discount.percent"]`.
-6. SDK получает событие и делает point reload только этого ключа.
+1. API валидирует `type` и `value`.
+2. Проверяет `config_bulk_lock:{namespace}` и берет `config_write_lock:{namespace}:{key}` через `SET NX` с TTL 30 секунд.
+3. В Redis через Lua script атомарно проверяет namespace lock, читает текущую версию и обновляет только один ключ.
+4. Ключ добавляется в `config_keys:{namespace}`.
+5. Для config записывается audit record в `audit:{namespace}`.
+6. В канал `events:{namespace}` публикуется одно событие `operation=updated`, `resource=config`, `keys=["discount.percent"]`.
+7. SDK получает событие и делает point reload только этого ключа.
+8. Lock освобождается через Lua script с проверкой token, включая ошибочные завершения.
 
 ### Получить параметр
 
 - Назначение: получить один config-параметр.
 - Метод: `GET`
 - URL: `/configs/{namespace}/{key}`
-- Авторизация: не требуется.
+- Авторизация: Bearer token с ролью `reader` и выше.
 
 Пример:
 
 ```bash
-curl "http://localhost:8080/configs/demo-service/discount.percent"
+curl "http://localhost:8080/configs/demo-service/discount.percent" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 Пример успешного ответа:
@@ -313,7 +327,7 @@ curl "http://localhost:8080/configs/demo-service/discount.percent"
 - Назначение: удалить один config-параметр.
 - Метод: `DELETE`
 - URL: `/configs/{namespace}/{key}`
-- Авторизация: не требуется.
+- Авторизация: Bearer token с ролью `owner` и выше.
 
 Query params:
 
@@ -323,7 +337,8 @@ Query params:
 
 ```bash
 curl -X DELETE \
-  "http://localhost:8080/configs/demo-service/app.title?updatedBy=admin@example.com"
+  "http://localhost:8080/configs/demo-service/app.title?updatedBy=admin@example.com" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 Успешный ответ:
@@ -484,8 +499,9 @@ Body:
 - `key` - обязательный.
 - `value` - обязательный фактически, но для `string` может быть пустым.
 - `type` - обязательный, один из `string|bool|int|float|json`.
-- `expectedVersion` - обязательный практически; если не передан, будет `0`.
 - `isSecret` - необязательный, по умолчанию `false`.
+
+`expectedVersion` в запросе не передается. Для каждого измененного ключа сервер сам вычисляет следующую версию.
 
 Пример:
 
@@ -500,20 +516,17 @@ curl -X POST "http://localhost:8080/config/update" \
       {
         "key": "app.title",
         "value": "Remote Config Demo",
-        "type": "string",
-        "expectedVersion": 0
+        "type": "string"
       },
       {
         "key": "app.theme",
         "value": "dark",
-        "type": "string",
-        "expectedVersion": 0
+        "type": "string"
       },
       {
         "key": "discount.percent",
         "value": "25",
-        "type": "int",
-        "expectedVersion": 0
+        "type": "int"
       }
     ]
   }'
@@ -565,17 +578,19 @@ curl -X POST "http://localhost:8080/config/update" \
 - `400 entries must not be empty`
 - `400 duplicate key "..."` при дубликатах в `entries`
 - `400 unsupported type "..."`.
-- `409 version conflict ...`
+- `423 namespace "..." is locked by another write operation`
 
 Что происходит внутри:
 
 1. API валидирует весь payload.
-2. В одном Redis Lua script проверяются версии всех элементов.
-3. Если конфликт или ошибка есть хотя бы у одного элемента, запись не выполняется ни для одного элемента.
-4. При успехе создаются или обновляются все указанные config-ключи.
-5. Для каждого config пишется audit record.
-6. Публикуется одно общее событие `operation=updated`, `resource=config`, `keys=[...]`.
-7. SDK перечитывает только измененные config-ключи.
+2. Redis lock `config_bulk_lock:{namespace}` берется через `SET NX` с TTL 30 секунд; если lock уже есть, API возвращает `423 Locked`.
+3. В одном Redis Lua script вычисляются следующие версии всех элементов.
+4. Если ошибка есть хотя бы у одного элемента, запись не выполняется ни для одного элемента.
+5. При успехе создаются или обновляются все указанные config-ключи.
+6. Для каждого config пишется audit record.
+7. Публикуется одно общее событие `operation=updated`, `resource=config`, `keys=[...]`.
+8. SDK перечитывает только измененные config-ключи.
+9. Lock освобождается после завершения операции, включая ошибочные завершения; TTL остается страховкой от зависшего процесса.
 
 ### Важно: поведение при обновлении
 
@@ -585,14 +600,15 @@ curl -X POST "http://localhost:8080/config/update" \
 - обновляются только переданные `entries`;
 - config-ключи, отсутствующие в запросе, не удаляются и не обнуляются;
 - при успешном изменении версия каждого измененного ключа увеличивается на `1`;
-- если ключа еще нет и `expectedVersion=0`, будет создание;
-- если ключа еще нет и `expectedVersion != 0`, будет `409`;
+- если ключа еще нет, будет создание с `version=1`;
+- если ключ уже есть, будет обновление с `version=current+1`;
 - если `value` пустой и `type=string`, пустая строка будет сохранена;
 - если `value` пустой и `type` не `string`, будет `400`;
 - если `type` неизвестен, будет `400`;
 - публикуется одно событие Redis Pub/Sub на весь запрос;
 - SDK получает список измененных ключей и делает point reload только этих ключей;
-- при `dryRun=true` данные, audit и события не создаются.
+- при `dryRun=true` данные, audit и события не создаются;
+- параллельные bulk-операции в одном namespace не выполняются одновременно: используется namespace-level lock.
 
 ### Импорт конфигураций
 
@@ -623,8 +639,7 @@ curl -X POST "http://localhost:8080/config/import" \
     "items": {
       "app.title": {
         "value": "Remote Config Demo",
-        "type": "string",
-        "expectedVersion": 0
+        "type": "string"
       },
       "app.theme": "dark",
       "discount.percent": 25
@@ -645,7 +660,6 @@ items:
   app.title:
     value: Remote Config Demo
     type: string
-    expectedVersion: 0
   app.theme: dark
   discount.percent: 25
 YAML
@@ -690,6 +704,7 @@ YAML
 - существующие значения, которых нет в import payload, не удаляются;
 - ошибки в одном элементе роняют весь запрос;
 - операция атомарна на весь запрос;
+- перед записью берется namespace-level lock, общий с `/config/update`;
 - при успешном import публикуется одно общее Pub/Sub событие на namespace;
 - SDK обновляет локальный кэш через это событие;
 - версия каждого измененного параметра увеличивается на `1`;
@@ -708,14 +723,13 @@ YAML
 
 - import не является полной заменой namespace;
 - import не затирает параметры, которых нет в запросе;
-- import использует тот же optimistic locking, что и `/config/update`;
+- import использует тот же namespace-level lock, что и `/config/update`;
 - import публикует одно событие Redis Pub/Sub с массивом измененных ключей;
 - SDK получает событие и перечитывает только измененные config-ключи;
 - при `dryRun=true` ничего не сохраняется и событие не публикуется;
 - формат `items` умеет:
   - выводить `type` автоматически для `string`, `bool`, `int`, `float`, `json`;
   - принимать `isSecret`;
-  - принимать `expectedVersion`;
   - собирать JSON-объект в строковое значение типа `json`;
   - отклонять `null`.
 
@@ -798,22 +812,23 @@ feature:{namespace}:{key}
 - Назначение: создать новый toggle или переключить существующий.
 - Метод: `PUT`
 - URL: `/features/{namespace}/{key}`
-- Авторизация: не требуется.
+- Авторизация: Bearer token с ролью `editor` и выше.
 
 Body:
 
 - `enabled` - логически обязательный. Важно: если поле не передано, Go-декодер оставит `false`, и API запишет `false`.
-- `expectedVersion` - необязательный технически, но практически обязателен; если не передан, будет `0`.
 - `updatedBy` - необязательный, по умолчанию `"api"`.
+
+`expectedVersion` в запросе не передается. Версия вычисляется сервером атомарно: новая запись получает `version=1`, существующая - `current+1`. Перед записью API берет `feature_write_lock:{namespace}:{key}` через `SET NX` с TTL 30 секунд. Если toggle уже заблокирован другой write-операцией, запрос получает `423 Locked`, значение не меняется и Pub/Sub событие не публикуется.
 
 Пример включения фичи:
 
 ```bash
 curl -X PUT "http://localhost:8080/features/demo-service/checkout_enabled" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": true,
-    "expectedVersion": 0,
     "updatedBy": "admin@example.com"
   }'
 ```
@@ -835,23 +850,32 @@ curl -X PUT "http://localhost:8080/features/demo-service/checkout_enabled" \
 
 Что происходит внутри:
 
-1. API валидирует `namespace`, `key`, `updatedBy`, `expectedVersion`.
-2. Redis Lua script создает или обновляет только один toggle.
-3. Ключ добавляется в `feature_keys:{namespace}`.
-4. Публикуется событие `operation=updated`, `resource=feature`, `keys=["checkout_enabled"]`.
-5. SDK перечитывает только этот feature toggle.
+1. API валидирует `namespace`, `key`, `updatedBy`.
+2. Берет `feature_write_lock:{namespace}:{key}` через `SET NX` с TTL 30 секунд.
+3. Redis Lua script атомарно читает текущую версию и создает или обновляет только один toggle.
+4. Ключ добавляется в `feature_keys:{namespace}`.
+5. Публикуется событие `operation=updated`, `resource=feature`, `keys=["checkout_enabled"]`.
+6. SDK перечитывает только этот feature toggle.
+7. Lock освобождается через Lua script с проверкой token, включая ошибочные завершения.
+
+Возможные ошибки:
+
+- `400 validation error`
+- `423 feature "namespace"/"key" is locked by another write operation`
+- `500 internal server error`
 
 ### Получить feature toggle
 
 - Назначение: получить один toggle.
 - Метод: `GET`
 - URL: `/features/{namespace}/{key}`
-- Авторизация: не требуется.
+- Авторизация: Bearer token с ролью `reader` и выше.
 
 Пример:
 
 ```bash
-curl "http://localhost:8080/features/demo-service/checkout_enabled"
+curl "http://localhost:8080/features/demo-service/checkout_enabled" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 Пример успешного ответа:
@@ -879,7 +903,7 @@ curl "http://localhost:8080/features/demo-service/checkout_enabled"
 - Назначение: удалить один toggle.
 - Метод: `DELETE`
 - URL: `/features/{namespace}/{key}`
-- Авторизация: не требуется.
+- Авторизация: Bearer token с ролью `owner` и выше.
 
 Query params:
 
@@ -889,7 +913,8 @@ Query params:
 
 ```bash
 curl -X DELETE \
-  "http://localhost:8080/features/demo-service/new_banner?updatedBy=admin@example.com"
+  "http://localhost:8080/features/demo-service/new_banner?updatedBy=admin@example.com" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 Успешный ответ:
@@ -927,12 +952,12 @@ curl -X DELETE \
 - обновляется только один переданный feature toggle;
 - это не операция над всем набором toggles;
 - toggles, которых нет в запросе, не затрагиваются;
-- если toggle не существовал и `expectedVersion=0`, он создается;
-- если toggle не существовал и `expectedVersion != 0`, будет `409`;
+- если toggle не существовал, он создается с `version=1`;
+- если toggle существовал, он обновляется с `version=current+1`;
 - если поле `enabled` не передано, в текущей реализации будет записано `false`;
 - при успешной записи версия увеличивается на `1`;
 - публикуется одно событие Redis Pub/Sub на один toggle;
-- SDK читает feature через `IsFeatureEnabled(key)`, которое возвращает `true` только если toggle есть в кэше и `enabled=true`.
+- SDK читает feature через namespace-scoped API, например `ns.IsFeatureEnabled(key)`, который возвращает `true` только если toggle есть в кэше и `enabled=true`.
 
 ## Health-check
 
@@ -980,13 +1005,14 @@ curl "http://localhost:8080/health"
 
 - Метод: `GET`
 - URL: `/metrics`
-- Авторизация: не требуется.
+- Авторизация: Bearer token с ролью `reader` и выше.
 - Назначение: отдать Prometheus metrics.
 
 Пример:
 
 ```bash
-curl "http://localhost:8080/metrics"
+curl "http://localhost:8080/metrics" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 Ответ:
@@ -1115,45 +1141,45 @@ curl -X POST "http://localhost:8080/cache/flush" \
 TOKEN="$(go run ./cmd/token -subject admin@example.com)"
 
 curl -X PUT "http://localhost:8080/configs/demo-service/app.title" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "Remote Config Demo",
     "type": "string",
-    "expectedVersion": 0,
     "updatedBy": "admin@example.com"
   }'
 
 curl -X PUT "http://localhost:8080/configs/demo-service/app.theme" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "dark",
     "type": "string",
-    "expectedVersion": 0,
     "updatedBy": "admin@example.com"
   }'
 
 curl -X PUT "http://localhost:8080/configs/demo-service/discount.percent" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "25",
     "type": "int",
-    "expectedVersion": 0,
     "updatedBy": "admin@example.com"
   }'
 
 curl -X PUT "http://localhost:8080/features/demo-service/new_banner" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": true,
-    "expectedVersion": 0,
     "updatedBy": "admin@example.com"
   }'
 
 curl -X PUT "http://localhost:8080/features/demo-service/checkout_enabled" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": true,
-    "expectedVersion": 0,
     "updatedBy": "admin@example.com"
   }'
 
@@ -1163,7 +1189,8 @@ curl "http://localhost:8080/config?namespace=demo-service" \
 curl "http://localhost:8080/configs" \
   -H "Authorization: Bearer $TOKEN"
 
-curl "http://localhost:8080/features/demo-service/new_banner"
+curl "http://localhost:8080/features/demo-service/new_banner" \
+  -H "Authorization: Bearer $TOKEN"
 
 curl "http://localhost:8080/config/export?namespace=demo-service&format=json" \
   -H "Authorization: Bearer $TOKEN"

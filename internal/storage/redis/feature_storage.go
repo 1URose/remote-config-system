@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -73,16 +72,29 @@ func (s *FeatureStorage) GetKey(ctx context.Context, namespace, key string) (dom
 	return decodeFeatureToggle(hash)
 }
 
-func (s *FeatureStorage) Upsert(ctx context.Context, namespace, key string, enabled bool, expectedVersion int64, updatedBy, requestID string) (domain.FeatureToggle, error) {
+func (s *FeatureStorage) Upsert(ctx context.Context, namespace, key string, enabled bool, updatedBy, requestID string) (item domain.FeatureToggle, err error) {
+	lockToken := fmt.Sprintf("%s:%d", requestID, time.Now().UnixNano())
+	locked, err := s.acquireFeatureWriteLock(ctx, namespace, key, lockToken)
+	if err != nil {
+		return domain.FeatureToggle{}, err
+	}
+	if !locked {
+		return domain.FeatureToggle{}, &domain.ResourceLockedError{Resource: "feature", Namespace: namespace, Key: key}
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if releaseErr := s.releaseFeatureWriteLock(releaseCtx, namespace, key, lockToken); releaseErr != nil && err == nil {
+			err = releaseErr
+		}
+	}()
+
 	now := time.Now().UTC()
 	result, err := s.client.Eval(ctx, upsertFeatureScript, []string{
 		featureSetKey(namespace),
 		updatesChannel(namespace),
-	}, namespace, key, strconv.FormatBool(enabled), expectedVersion, now.Format(time.RFC3339Nano), updatedBy, requestID).Result()
+	}, namespace, key, strconv.FormatBool(enabled), now.Format(time.RFC3339Nano), updatedBy, requestID).Result()
 	if err != nil {
-		if conflict := parseSingleVersionConflict(err, key, expectedVersion); conflict != nil {
-			return domain.FeatureToggle{}, conflict
-		}
 		return domain.FeatureToggle{}, fmt.Errorf("upsert feature key %q: %w", key, err)
 	}
 
@@ -103,6 +115,21 @@ func (s *FeatureStorage) Upsert(ctx context.Context, namespace, key string, enab
 		UpdatedAt: now,
 		UpdatedBy: updatedBy,
 	}, nil
+}
+
+func (s *FeatureStorage) acquireFeatureWriteLock(ctx context.Context, namespace, key, token string) (bool, error) {
+	locked, err := s.client.SetNX(ctx, featureWriteLockKey(namespace, key), token, singleKeyWriteLockTTL).Result()
+	if err != nil {
+		return false, fmt.Errorf("acquire feature write lock %q/%q: %w", namespace, key, err)
+	}
+	return locked, nil
+}
+
+func (s *FeatureStorage) releaseFeatureWriteLock(ctx context.Context, namespace, key, token string) error {
+	if err := s.client.Eval(ctx, releaseLockScript, []string{featureWriteLockKey(namespace, key)}, token).Err(); err != nil {
+		return fmt.Errorf("release feature write lock %q/%q: %w", namespace, key, err)
+	}
+	return nil
 }
 
 func (s *FeatureStorage) DeleteKey(ctx context.Context, namespace, key, updatedBy, requestID string) error {
@@ -156,43 +183,21 @@ func decodeFeatureToggle(hash map[string]string) (domain.FeatureToggle, error) {
 	}, nil
 }
 
-func parseSingleVersionConflict(err error, key string, expectedVersion int64) error {
-	if err == nil {
-		return nil
-	}
-	message := err.Error()
-	if !strings.HasPrefix(message, "VERSION_CONFLICT:") {
-		return nil
-	}
-	parts := strings.Split(message, ":")
-	if len(parts) != 3 {
-		return err
-	}
-	currentVersion, parseErr := strconv.ParseInt(parts[2], 10, 64)
-	if parseErr != nil {
-		return err
-	}
-	return &domain.VersionConflictError{
-		Key:             key,
-		CurrentVersion:  currentVersion,
-		ExpectedVersion: expectedVersion,
-	}
-}
-
 const upsertFeatureScript = `
 local namespace = ARGV[1]
 local itemKey = ARGV[2]
 local enabled = ARGV[3]
-local expectedVersion = tonumber(ARGV[4])
-local updatedAt = ARGV[5]
-local updatedBy = ARGV[6]
-local requestID = ARGV[7]
+local updatedAt = ARGV[4]
+local updatedBy = ARGV[5]
+local requestID = ARGV[6]
 local redisKey = 'feature:' .. namespace .. ':' .. itemKey
-local currentVersion = tonumber(redis.call('HGET', redisKey, 'version')) or 0
+local featureSetType = redis.call('TYPE', KEYS[1])['ok']
 
-if expectedVersion ~= currentVersion then
-	return { err = 'VERSION_CONFLICT:' .. itemKey .. ':' .. tostring(currentVersion) }
+if featureSetType ~= 'none' and featureSetType ~= 'set' then
+	return { err = 'INVALID_FEATURE_SET_TYPE' }
 end
+
+local currentVersion = tonumber(redis.call('HGET', redisKey, 'version')) or 0
 
 local nextVersion = tostring(currentVersion + 1)
 redis.call('HSET', redisKey,

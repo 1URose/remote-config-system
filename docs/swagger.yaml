@@ -27,8 +27,6 @@ definitions:
     type: object
   domain.ConfigImportItem:
     properties:
-      expectedVersion:
-        type: integer
       isSecret:
         example: false
         type: boolean
@@ -85,9 +83,6 @@ definitions:
     type: object
   domain.ConfigUpdateEntry:
     properties:
-      expectedVersion:
-        example: 0
-        type: integer
       isSecret:
         example: false
         type: boolean
@@ -220,9 +215,6 @@ definitions:
     type: object
   http.PutConfigKeyRequest:
     properties:
-      expectedVersion:
-        example: 0
-        type: integer
       isSecret:
         example: false
         type: boolean
@@ -241,9 +233,6 @@ definitions:
       enabled:
         example: true
         type: boolean
-      expectedVersion:
-        example: 0
-        type: integer
       updatedBy:
         example: admin@example.com
         type: string
@@ -421,7 +410,7 @@ paths:
       consumes:
       - application/json
       description: |-
-        Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The request is atomic for the whole payload, checks versions per item, and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.
+        Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The client does not send expectedVersion; the server computes each next version. The namespace is protected by a Redis lock while the import runs. The request is atomic for the whole payload and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.
         Импортирует конфигурацию из JSON или YAML payload и публикует событие обновления.
       parameters:
       - description: Данные импорта конфигурации
@@ -449,8 +438,8 @@ paths:
           description: forbidden
           schema:
             type: string
-        "409":
-          description: version conflict
+        "423":
+          description: namespace is locked by another write operation
           schema:
             type: string
         "500":
@@ -467,7 +456,7 @@ paths:
       consumes:
       - application/json
       description: |-
-        Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.
+        Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The client does not send expectedVersion; the server computes each next version. The namespace is protected by a Redis lock while the bulk operation runs. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.
         Обновляет несколько конфигурационных параметров в namespace и публикует событие обновления.
       parameters:
       - description: Данные обновления конфигурации
@@ -495,8 +484,8 @@ paths:
           description: forbidden
           schema:
             type: string
-        "409":
-          description: version conflict
+        "423":
+          description: namespace is locked by another write operation
           schema:
             type: string
         "500":
@@ -563,6 +552,14 @@ paths:
           description: validation error
           schema:
             type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
         "404":
           description: config item not found
           schema:
@@ -571,6 +568,8 @@ paths:
           description: internal server error
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Удалить конфигурационный параметр
       tags:
       - configs
@@ -594,6 +593,14 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/domain.ConfigItem'
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
         "404":
           description: config item not found
           schema:
@@ -602,6 +609,8 @@ paths:
           description: internal server error
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Получить конфигурационный параметр
       tags:
       - configs
@@ -609,7 +618,7 @@ paths:
       consumes:
       - application/json
       description: |-
-        Upserts a single config item. If the item does not exist, expectedVersion must be 0 and the item is created. If it exists, expectedVersion must match the current version. Only the addressed key is changed; other keys in the namespace are untouched. A successful write increments the item version and publishes one Redis Pub/Sub update event for that key.
+        Upserts a single config item. The client does not send expectedVersion; the server takes a per-resource Redis lock, checks the namespace bulk lock, reads the current value atomically, creates version 1 for a new key, or stores current version + 1 for an existing key. Concurrent writes to the same key, or writes while a bulk update/import holds the namespace lock, return 423 Locked instead of 409 because the resource is temporarily locked rather than version-conflicted. Only the addressed key is changed; other keys in the namespace are untouched. A successful write publishes one Redis Pub/Sub update event for that key.
         Сохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.
       parameters:
       - description: Namespace сервиса
@@ -639,14 +648,24 @@ paths:
           description: bad request or validation error
           schema:
             type: string
-        "409":
-          description: version conflict
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "423":
+          description: resource or namespace is locked by another write operation
           schema:
             type: string
         "500":
           description: internal server error
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Создать или обновить конфигурационный параметр
       tags:
       - configs
@@ -677,6 +696,14 @@ paths:
           description: validation error
           schema:
             type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
         "404":
           description: config item not found
           schema:
@@ -685,6 +712,8 @@ paths:
           description: internal server error
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Удалить feature toggle
       tags:
       - features
@@ -708,6 +737,14 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/domain.FeatureToggle'
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
         "404":
           description: config item not found
           schema:
@@ -716,6 +753,8 @@ paths:
           description: internal server error
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Получить feature toggle
       tags:
       - features
@@ -723,7 +762,7 @@ paths:
       consumes:
       - application/json
       description: |-
-        Upserts a single feature toggle. If the toggle does not exist, expectedVersion must be 0 and the toggle is created. If it exists, expectedVersion must match the current version. Only the addressed toggle is changed; other toggles are untouched. A successful write increments the toggle version and publishes one Redis Pub/Sub update event for that key.
+        Upserts a single feature toggle. The client does not send expectedVersion; the server takes a per-resource Redis lock, reads the current value atomically, creates version 1 for a new toggle, or stores current version + 1 for an existing toggle. Concurrent writes to the same toggle return 423 Locked instead of 409 because the resource is temporarily locked rather than version-conflicted. Only the addressed toggle is changed; other toggles are untouched. A successful write publishes one Redis Pub/Sub update event for that key.
         Сохраняет feature toggle в Redis и публикует событие обновления для SDK.
       parameters:
       - description: Namespace сервиса
@@ -753,14 +792,24 @@ paths:
           description: bad request or validation error
           schema:
             type: string
-        "409":
-          description: version conflict
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "423":
+          description: resource is locked by another write operation
           schema:
             type: string
         "500":
           description: internal server error
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Создать или обновить feature toggle
       tags:
       - features
@@ -791,6 +840,16 @@ paths:
           description: Prometheus metrics
           schema:
             type: string
+        "401":
+          description: missing bearer token
+          schema:
+            type: string
+        "403":
+          description: forbidden
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
       summary: Метрики Admin API
       tags:
       - metrics

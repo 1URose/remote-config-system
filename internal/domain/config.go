@@ -29,16 +29,14 @@ type ConfigImportRequest struct {
 }
 
 type ConfigImportItem struct {
-	Value           any    `json:"value" yaml:"value"`
-	Type            string `json:"type,omitempty" yaml:"type,omitempty" example:"int"`
-	ExpectedVersion *int64 `json:"expectedVersion,omitempty" yaml:"expectedVersion,omitempty"`
-	IsSecret        bool   `json:"isSecret,omitempty" yaml:"isSecret,omitempty" example:"false"`
+	Value    any    `json:"value" yaml:"value"`
+	Type     string `json:"type,omitempty" yaml:"type,omitempty" example:"int"`
+	IsSecret bool   `json:"isSecret,omitempty" yaml:"isSecret,omitempty" example:"false"`
 }
 
 type ConfigUpdateEntry struct {
-	Key             string `json:"key" yaml:"key" example:"discount.percent"`
-	Value           string `json:"value" yaml:"value" example:"25"`
-	Type            string `json:"type" yaml:"type" example:"int"`
-	ExpectedVersion int64  `json:"expectedVersion" yaml:"expectedVersion" example:"0"`
-	IsSecret        bool   `json:"isSecret" yaml:"isSecret" example:"false"`
+	Key      string `json:"key" yaml:"key" example:"discount.percent"`
+	Value    string `json:"value" yaml:"value" example:"25"`
+	Type     string `json:"type" yaml:"type" example:"int"`
+	IsSecret bool   `json:"isSecret" yaml:"isSecret" example:"false"`
 }

@@ -14,19 +14,6 @@ Demo использует публичный SDK как внешний потр�
 
 Общий порядок запуска всей системы и роль SDK в полном сценарии описаны в корневом [README.md](../README.md), раздел `Полный запуск системы`.
 
-## Структура
-
-```text
-demo/
-├── cmd/
-│   └── demo-service/
-│       └── main.go
-├── web/
-│   └── index.html
-├── README.md
-└── Makefile
-```
-
 ## Инструкция по запуску
 
 Если нужно только быстро поднять demo и записать видео, достаточно этого раздела.
@@ -93,33 +80,6 @@ curl http://localhost:8081/api/state
 }
 ```
 
-## Полный поток запуска demo
-
-Из корня репозитория:
-
-```bash
-make docker-up
-```
-
-Во втором терминале:
-
-```bash
-make run-admin
-```
-
-В третьем терминале:
-
-```bash
-cd demo
-make run
-```
-
-Открыть:
-
-```text
-http://localhost:8081
-```
-
 ## Команды Admin API
 
 Ниже используются актуальные текущие endpoint'ы Admin API:
@@ -127,17 +87,23 @@ http://localhost:8081
 - `PUT /configs/{namespace}/{key}`
 - `PUT /features/{namespace}/{key}`
 
-Эти примеры предполагают, что ключи еще не созданы, поэтому `expectedVersion` равен `0`. Если тот же ключ изменяется повторно, нужно передать актуальную версию.
+`expectedVersion` больше не передается: Admin API сам вычисляет версию. Single-key запись защищена Redis lock, поэтому конкурентная запись в тот же config key или feature toggle получает `423 Locked`; bulk `/config/update` и `/config/import` остаются `merge only` и защищены namespace-level lock.
+
+Сначала получите JWT для Admin API:
+
+```bash
+TOKEN="$(go run ../cmd/token -subject demo-video -roles editor)"
+```
 
 Изменить заголовок:
 
 ```bash
 curl -X PUT http://localhost:8080/configs/demo-service/app.title \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "Remote Config Demo v2",
     "type": "string",
-    "expectedVersion": 0,
     "updatedBy": "demo-video"
   }'
 ```
@@ -146,11 +112,11 @@ curl -X PUT http://localhost:8080/configs/demo-service/app.title \
 
 ```bash
 curl -X PUT http://localhost:8080/configs/demo-service/discount.percent \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "25",
     "type": "int",
-    "expectedVersion": 0,
     "updatedBy": "demo-video"
   }'
 ```
@@ -159,11 +125,11 @@ curl -X PUT http://localhost:8080/configs/demo-service/discount.percent \
 
 ```bash
 curl -X PUT http://localhost:8080/configs/demo-service/app.theme \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "value": "dark",
     "type": "string",
-    "expectedVersion": 0,
     "updatedBy": "demo-video"
   }'
 ```
@@ -172,10 +138,10 @@ curl -X PUT http://localhost:8080/configs/demo-service/app.theme \
 
 ```bash
 curl -X PUT http://localhost:8080/features/demo-service/new_banner \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": false,
-    "expectedVersion": 0,
     "updatedBy": "demo-video"
   }'
 ```
@@ -184,10 +150,10 @@ curl -X PUT http://localhost:8080/features/demo-service/new_banner \
 
 ```bash
 curl -X PUT http://localhost:8080/features/demo-service/checkout_enabled \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": true,
-    "expectedVersion": 0,
     "updatedBy": "demo-video"
   }'
 ```

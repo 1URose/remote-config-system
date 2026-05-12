@@ -7,14 +7,22 @@ import (
 
 var ErrNotFound = errors.New("config item not found")
 
-type VersionConflictError struct {
-	Key             string
-	ExpectedVersion int64
-	CurrentVersion  int64
+type NamespaceLockedError struct {
+	Namespace string
 }
 
-func (e *VersionConflictError) Error() string {
-	return fmt.Sprintf("version conflict for key %q: expected=%d current=%d", e.Key, e.ExpectedVersion, e.CurrentVersion)
+func (e *NamespaceLockedError) Error() string {
+	return fmt.Sprintf("namespace %q is locked by another write operation", e.Namespace)
+}
+
+type ResourceLockedError struct {
+	Resource  string
+	Namespace string
+	Key       string
+}
+
+func (e *ResourceLockedError) Error() string {
+	return fmt.Sprintf("%s %q/%q is locked by another write operation", e.Resource, e.Namespace, e.Key)
 }
 
 type ValidationError struct {

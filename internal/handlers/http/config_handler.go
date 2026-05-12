@@ -47,15 +47,15 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /docs", s.handleDocsRedirect)
 	mux.HandleFunc("GET /docs/", s.handleDocsRedirect)
-	mux.Handle("GET /metrics", stdhttp.HandlerFunc(s.handleMetrics))
+	mux.Handle("GET /metrics", s.auth.Middleware(auth.RoleReader, stdhttp.HandlerFunc(s.handleMetrics)))
 	mux.Handle("/swagger/", httpSwagger.WrapHandler)
 	mux.Handle("GET /configs", s.auth.Middleware(auth.RoleReader, stdhttp.HandlerFunc(s.handleGetAllConfigs)))
-	mux.HandleFunc("GET /configs/{namespace}/{key}", s.handleGetConfigKey)
-	mux.HandleFunc("PUT /configs/{namespace}/{key}", s.handlePutConfigKey)
-	mux.HandleFunc("DELETE /configs/{namespace}/{key}", s.handleDeleteConfigKey)
-	mux.HandleFunc("GET /features/{namespace}/{key}", s.handleGetFeatureKey)
-	mux.HandleFunc("PUT /features/{namespace}/{key}", s.handlePutFeatureKey)
-	mux.HandleFunc("DELETE /features/{namespace}/{key}", s.handleDeleteFeatureKey)
+	mux.Handle("GET /configs/{namespace}/{key}", s.auth.Middleware(auth.RoleReader, stdhttp.HandlerFunc(s.handleGetConfigKey)))
+	mux.Handle("PUT /configs/{namespace}/{key}", s.auth.Middleware(auth.RoleEditor, stdhttp.HandlerFunc(s.handlePutConfigKey)))
+	mux.Handle("DELETE /configs/{namespace}/{key}", s.auth.Middleware(auth.RoleOwner, stdhttp.HandlerFunc(s.handleDeleteConfigKey)))
+	mux.Handle("GET /features/{namespace}/{key}", s.auth.Middleware(auth.RoleReader, stdhttp.HandlerFunc(s.handleGetFeatureKey)))
+	mux.Handle("PUT /features/{namespace}/{key}", s.auth.Middleware(auth.RoleEditor, stdhttp.HandlerFunc(s.handlePutFeatureKey)))
+	mux.Handle("DELETE /features/{namespace}/{key}", s.auth.Middleware(auth.RoleOwner, stdhttp.HandlerFunc(s.handleDeleteFeatureKey)))
 	mux.Handle("GET /config", s.auth.Middleware(auth.RoleReader, stdhttp.HandlerFunc(s.handleGetConfig)))
 	mux.Handle("POST /config/update", s.auth.Middleware(auth.RoleEditor, stdhttp.HandlerFunc(s.handleUpdate)))
 	mux.Handle("POST /cache/flush", s.auth.Middleware(auth.RoleOwner, stdhttp.HandlerFunc(s.handleFlush)))
@@ -109,7 +109,10 @@ func (s *Server) handleDocsRedirect(w stdhttp.ResponseWriter, r *stdhttp.Request
 // @Description Возвращает метрики в формате Prometheus.
 // @Tags metrics
 // @Produce plain
+// @Security BearerAuth
 // @Success 200 {string} string "Prometheus metrics"
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
 // @Router /metrics [get]
 func (s *Server) handleMetrics(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	s.metrics.Handler().ServeHTTP(w, r)
@@ -179,9 +182,12 @@ func (s *Server) handleGetAllConfigs(w stdhttp.ResponseWriter, r *stdhttp.Reques
 // @Description Возвращает конфигурационный параметр по namespace и key.
 // @Tags configs
 // @Produce json
+// @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ параметра"
 // @Success 200 {object} domain.ConfigItem
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
 // @Failure 404 {string} string "config item not found"
 // @Failure 500 {string} string "internal server error"
 // @Router /configs/{namespace}/{key} [get]
@@ -195,18 +201,21 @@ func (s *Server) handleGetConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 }
 
 // PutConfigKey godoc
-// @Description Upserts a single config item. If the item does not exist, expectedVersion must be 0 and the item is created. If it exists, expectedVersion must match the current version. Only the addressed key is changed; other keys in the namespace are untouched. A successful write increments the item version and publishes one Redis Pub/Sub update event for that key.
+// @Description Upserts a single config item. The client does not send expectedVersion; the server takes a per-resource Redis lock, checks the namespace bulk lock, reads the current value atomically, creates version 1 for a new key, or stores current version + 1 for an existing key. Concurrent writes to the same key, or writes while a bulk update/import holds the namespace lock, return 423 Locked instead of 409 because the resource is temporarily locked rather than version-conflicted. Only the addressed key is changed; other keys in the namespace are untouched. A successful write publishes one Redis Pub/Sub update event for that key.
 // @Summary Создать или обновить конфигурационный параметр
 // @Description Сохраняет конфигурационный параметр в Redis и публикует событие обновления для SDK.
 // @Tags configs
 // @Accept json
 // @Produce json
+// @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ параметра"
 // @Param request body PutConfigKeyRequest true "Данные конфигурационного параметра"
 // @Success 200 {object} domain.ConfigItem
 // @Failure 400 {string} string "bad request or validation error"
-// @Failure 409 {string} string "version conflict"
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
+// @Failure 423 {string} string "resource or namespace is locked by another write operation"
 // @Failure 500 {string} string "internal server error"
 // @Router /configs/{namespace}/{key} [put]
 func (s *Server) handlePutConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -223,7 +232,6 @@ func (s *Server) handlePutConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 		strings.TrimSpace(r.PathValue("key")),
 		req.Value,
 		req.Type,
-		req.ExpectedVersion,
 		req.IsSecret,
 		req.UpdatedBy,
 		requestIDFromContext(r.Context()),
@@ -240,11 +248,14 @@ func (s *Server) handlePutConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Request
 // @Description Удаляет параметр из Redis и публикует событие обновления.
 // @Tags configs
 // @Produce json
+// @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ параметра"
 // @Param updatedBy query string false "Кто выполняет удаление"
 // @Success 204
 // @Failure 400 {string} string "validation error"
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
 // @Failure 404 {string} string "config item not found"
 // @Failure 500 {string} string "internal server error"
 // @Router /configs/{namespace}/{key} [delete]
@@ -269,9 +280,12 @@ func (s *Server) handleDeleteConfigKey(w stdhttp.ResponseWriter, r *stdhttp.Requ
 // @Description Возвращает состояние feature toggle по namespace и key.
 // @Tags features
 // @Produce json
+// @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ feature toggle"
 // @Success 200 {object} domain.FeatureToggle
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
 // @Failure 404 {string} string "config item not found"
 // @Failure 500 {string} string "internal server error"
 // @Router /features/{namespace}/{key} [get]
@@ -285,18 +299,21 @@ func (s *Server) handleGetFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Reques
 }
 
 // PutFeatureKey godoc
-// @Description Upserts a single feature toggle. If the toggle does not exist, expectedVersion must be 0 and the toggle is created. If it exists, expectedVersion must match the current version. Only the addressed toggle is changed; other toggles are untouched. A successful write increments the toggle version and publishes one Redis Pub/Sub update event for that key.
+// @Description Upserts a single feature toggle. The client does not send expectedVersion; the server takes a per-resource Redis lock, reads the current value atomically, creates version 1 for a new toggle, or stores current version + 1 for an existing toggle. Concurrent writes to the same toggle return 423 Locked instead of 409 because the resource is temporarily locked rather than version-conflicted. Only the addressed toggle is changed; other toggles are untouched. A successful write publishes one Redis Pub/Sub update event for that key.
 // @Summary Создать или обновить feature toggle
 // @Description Сохраняет feature toggle в Redis и публикует событие обновления для SDK.
 // @Tags features
 // @Accept json
 // @Produce json
+// @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ feature toggle"
 // @Param request body PutFeatureKeyRequest true "Данные feature toggle"
 // @Success 200 {object} domain.FeatureToggle
 // @Failure 400 {string} string "bad request or validation error"
-// @Failure 409 {string} string "version conflict"
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
+// @Failure 423 {string} string "resource is locked by another write operation"
 // @Failure 500 {string} string "internal server error"
 // @Router /features/{namespace}/{key} [put]
 func (s *Server) handlePutFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -312,7 +329,6 @@ func (s *Server) handlePutFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		strings.TrimSpace(r.PathValue("namespace")),
 		strings.TrimSpace(r.PathValue("key")),
 		req.Enabled,
-		req.ExpectedVersion,
 		req.UpdatedBy,
 		requestIDFromContext(r.Context()),
 	)
@@ -328,11 +344,14 @@ func (s *Server) handlePutFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Reques
 // @Description Удаляет feature toggle из Redis и публикует событие обновления.
 // @Tags features
 // @Produce json
+// @Security BearerAuth
 // @Param namespace path string true "Namespace сервиса"
 // @Param key path string true "Ключ feature toggle"
 // @Param updatedBy query string false "Кто выполняет удаление"
 // @Success 204
 // @Failure 400 {string} string "validation error"
+// @Failure 401 {string} string "missing bearer token"
+// @Failure 403 {string} string "forbidden"
 // @Failure 404 {string} string "config item not found"
 // @Failure 500 {string} string "internal server error"
 // @Router /features/{namespace}/{key} [delete]
@@ -353,7 +372,7 @@ func (s *Server) handleDeleteFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Req
 }
 
 // UpdateConfig godoc
-// @Description Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.
+// @Description Merge semantics: only entries from the request are updated or created, and config items omitted from the request are left unchanged. The client does not send expectedVersion; the server computes each next version. The namespace is protected by a Redis lock while the bulk operation runs. The request succeeds atomically for all entries or fails without partial writes. On success each changed item gets version+1 and the API publishes one Redis Pub/Sub event with the list of changed keys. When dryRun=true, the request validates and computes versions but does not persist data, create audit records, or publish events.
 // @Summary Массовое обновление конфигурации
 // @Description Обновляет несколько конфигурационных параметров в namespace и публикует событие обновления.
 // @Tags legacy-config
@@ -365,7 +384,7 @@ func (s *Server) handleDeleteFeatureKey(w stdhttp.ResponseWriter, r *stdhttp.Req
 // @Failure 400 {string} string "bad request or validation error"
 // @Failure 401 {string} string "missing bearer token"
 // @Failure 403 {string} string "forbidden"
-// @Failure 409 {string} string "version conflict"
+// @Failure 423 {string} string "namespace is locked by another write operation"
 // @Failure 500 {string} string "internal server error"
 // @Router /config/update [post]
 func (s *Server) handleUpdate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -381,11 +400,11 @@ func (s *Server) handleUpdate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 	items, err := s.configService.Update(r.Context(), req, requestIDFromContext(r.Context()))
 	if err != nil {
-		var conflict *domain.VersionConflictError
+		var locked *domain.NamespaceLockedError
 		var validationErr *domain.ValidationError
 		switch {
-		case errors.As(err, &conflict):
-			stdhttp.Error(w, err.Error(), stdhttp.StatusConflict)
+		case errors.As(err, &locked):
+			stdhttp.Error(w, err.Error(), stdhttp.StatusLocked)
 		case errors.As(err, &validationErr):
 			stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		default:
@@ -445,7 +464,7 @@ func (s *Server) handleFlush(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 // ImportConfig godoc
-// @Description Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The request is atomic for the whole payload, checks versions per item, and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.
+// @Description Merge semantics: import converts the payload to the same update flow as /config/update. Only items present in the request are updated or created; existing config items omitted from the payload are left unchanged. The client does not send expectedVersion; the server computes each next version. The namespace is protected by a Redis lock while the import runs. The request is atomic for the whole payload and publishes one Redis Pub/Sub update event with all changed keys. When dryRun=true, nothing is persisted and no event is published.
 // @Summary Импорт конфигурации
 // @Description Импортирует конфигурацию из JSON или YAML payload и публикует событие обновления.
 // @Tags legacy-config
@@ -457,7 +476,7 @@ func (s *Server) handleFlush(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 // @Failure 400 {string} string "bad request or validation error"
 // @Failure 401 {string} string "missing bearer token"
 // @Failure 403 {string} string "forbidden"
-// @Failure 409 {string} string "version conflict"
+// @Failure 423 {string} string "namespace is locked by another write operation"
 // @Failure 500 {string} string "internal server error"
 // @Router /config/import [post]
 func (s *Server) handleImport(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -479,11 +498,11 @@ func (s *Server) handleImport(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 	items, err := s.configService.Import(r.Context(), req, requestIDFromContext(r.Context()))
 	if err != nil {
-		var conflict *domain.VersionConflictError
+		var locked *domain.NamespaceLockedError
 		var validationErr *domain.ValidationError
 		switch {
-		case errors.As(err, &conflict):
-			stdhttp.Error(w, err.Error(), stdhttp.StatusConflict)
+		case errors.As(err, &locked):
+			stdhttp.Error(w, err.Error(), stdhttp.StatusLocked)
 		case errors.As(err, &validationErr):
 			stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		default:
@@ -611,13 +630,16 @@ func (s *Server) writeJSON(w stdhttp.ResponseWriter, status int, payload any) {
 }
 
 func (s *Server) writeDomainError(w stdhttp.ResponseWriter, operation string, err error) {
-	var conflict *domain.VersionConflictError
+	var locked *domain.NamespaceLockedError
+	var resourceLocked *domain.ResourceLockedError
 	var validationErr *domain.ValidationError
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		stdhttp.Error(w, err.Error(), stdhttp.StatusNotFound)
-	case errors.As(err, &conflict):
-		stdhttp.Error(w, err.Error(), stdhttp.StatusConflict)
+	case errors.As(err, &locked):
+		stdhttp.Error(w, err.Error(), stdhttp.StatusLocked)
+	case errors.As(err, &resourceLocked):
+		stdhttp.Error(w, err.Error(), stdhttp.StatusLocked)
 	case errors.As(err, &validationErr):
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 	default:
@@ -672,15 +694,13 @@ func defaultUpdatedBy(value string) string {
 }
 
 type PutConfigKeyRequest struct {
-	Value           string `json:"value" yaml:"value" example:"15"`
-	Type            string `json:"type" yaml:"type" example:"int"`
-	ExpectedVersion int64  `json:"expectedVersion" yaml:"expectedVersion" example:"0"`
-	IsSecret        bool   `json:"isSecret" yaml:"isSecret" example:"false"`
-	UpdatedBy       string `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
+	Value     string `json:"value" yaml:"value" example:"15"`
+	Type      string `json:"type" yaml:"type" example:"int"`
+	IsSecret  bool   `json:"isSecret" yaml:"isSecret" example:"false"`
+	UpdatedBy string `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
 }
 
 type PutFeatureKeyRequest struct {
-	Enabled         bool   `json:"enabled" yaml:"enabled" example:"true"`
-	ExpectedVersion int64  `json:"expectedVersion" yaml:"expectedVersion" example:"0"`
-	UpdatedBy       string `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
+	Enabled   bool   `json:"enabled" yaml:"enabled" example:"true"`
+	UpdatedBy string `json:"updatedBy" yaml:"updatedBy" example:"admin@example.com"`
 }

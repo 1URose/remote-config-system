@@ -40,6 +40,18 @@ func auditListKey(namespace string) string {
 	return fmt.Sprintf("audit:%s", namespace)
 }
 
+func bulkLockKey(namespace string) string {
+	return fmt.Sprintf("config_bulk_lock:%s", namespace)
+}
+
+func configWriteLockKey(namespace, key string) string {
+	return fmt.Sprintf("config_write_lock:%s:%s", namespace, key)
+}
+
+func featureWriteLockKey(namespace, key string) string {
+	return fmt.Sprintf("feature_write_lock:%s:%s", namespace, key)
+}
+
 func updatesChannel(namespace string) string {
 	return fmt.Sprintf("events:%s", namespace)
 }

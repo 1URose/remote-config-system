@@ -41,7 +41,7 @@ func TestValidateUpdateRequest(t *testing.T) {
 		Namespace: "payments",
 		UpdatedBy: "admin@example.com",
 		Entries: []domain.ConfigUpdateEntry{
-			{Key: "flag", Value: "true", Type: "bool", ExpectedVersion: 0},
+			{Key: "flag", Value: "true", Type: "bool"},
 		},
 	}
 	if err := ValidateUpdateRequest(req); err != nil {
@@ -59,7 +59,6 @@ items:
   max_retries:
     value: 3
     type: int
-    expectedVersion: 2
   config_blob:
     hello: world
 `)
@@ -81,7 +80,7 @@ items:
 	if req.Entries[1].Key != "feature_x_enabled" || req.Entries[1].Type != "bool" || req.Entries[1].Value != "true" {
 		t.Fatalf("unexpected feature_x_enabled entry: %+v", req.Entries[1])
 	}
-	if req.Entries[2].ExpectedVersion != 2 || req.Entries[2].Value != "3" {
+	if req.Entries[2].Value != "3" {
 		t.Fatalf("unexpected max_retries entry: %+v", req.Entries[2])
 	}
 }

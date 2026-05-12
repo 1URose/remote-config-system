@@ -31,12 +31,42 @@ func TestRBACForbidden(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	req := newRequest(stdhttp.MethodPost, "/config/update", readerToken, `{"namespace":"payments","updatedBy":"reader@example.com","entries":[{"key":"flag","value":"true","type":"bool","expectedVersion":0}]}`, "application/json")
+	req := newRequest(stdhttp.MethodPost, "/config/update", readerToken, `{"namespace":"payments","updatedBy":"reader@example.com","entries":[{"key":"flag","value":"true","type":"bool"}]}`, "application/json")
 	req.Header.Set("Authorization", "Bearer "+readerToken)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != stdhttp.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestPerKeyAndMetricsRBAC(t *testing.T) {
+	server, _, authManager, _ := newTestServer(t)
+	readerToken := mustToken(t, authManager, "reader@example.com", auth.RoleReader)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/metrics", "", "", ""))
+	if rec.Code != stdhttp.StatusUnauthorized {
+		t.Fatalf("expected metrics without token to return 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/metrics", readerToken, "", ""))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected metrics with reader token to return 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", readerToken, `{"value":"15","type":"int","updatedBy":"tester"}`, "application/json"))
+	if rec.Code != stdhttp.StatusForbidden {
+		t.Fatalf("expected reader config put to return 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodDelete, "/configs/payments/timeout?updatedBy=tester", editorToken, "", "application/json"))
+	if rec.Code != stdhttp.StatusForbidden {
+		t.Fatalf("expected editor config delete to return 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -48,7 +78,7 @@ func TestUpdateEndpoint(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	req := newRequest(stdhttp.MethodPost, "/config/update", editorToken, `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"flag","value":"true","type":"bool","expectedVersion":0}]}`, "application/json")
+	req := newRequest(stdhttp.MethodPost, "/config/update", editorToken, `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"flag","value":"true","type":"bool"}]}`, "application/json")
 	req = req.WithContext(context.Background())
 
 	rec := httptest.NewRecorder()
@@ -58,18 +88,21 @@ func TestUpdateEndpoint(t *testing.T) {
 	}
 }
 
-func TestConfigCRUDEndpointsWithoutAuth(t *testing.T) {
-	server, _, _, _ := newTestServer(t)
+func TestConfigCRUDEndpointsWithRBAC(t *testing.T) {
+	server, _, authManager, _ := newTestServer(t)
+	readerToken := mustToken(t, authManager, "reader@example.com", auth.RoleReader)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
+	ownerToken := mustToken(t, authManager, "owner@example.com", auth.RoleOwner)
 
-	putBody := `{"value":"15","type":"int","expectedVersion":0,"updatedBy":"tester"}`
+	putBody := `{"value":"15","type":"int","updatedBy":"tester"}`
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", "", putBody, "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", editorToken, putBody, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected put 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/configs/payments/timeout", "", "", "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/configs/payments/timeout", readerToken, "", "application/json"))
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected get 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -83,13 +116,25 @@ func TestConfigCRUDEndpointsWithoutAuth(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodDelete, "/configs/payments/timeout?updatedBy=tester", "", "", "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", editorToken, `{"value":"30","type":"int","updatedBy":"tester"}`, "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected second put 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &item); err != nil {
+		t.Fatalf("unmarshal updated config item: %v", err)
+	}
+	if item.Value != "30" || item.Version != 2 {
+		t.Fatalf("expected server-computed version 2, got %+v", item)
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodDelete, "/configs/payments/timeout?updatedBy=tester", ownerToken, "", "application/json"))
 	if rec.Code != stdhttp.StatusNoContent {
 		t.Fatalf("expected delete 204, got %d body=%s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/configs/payments/timeout", "", "", "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/configs/payments/timeout", readerToken, "", "application/json"))
 	if rec.Code != stdhttp.StatusNotFound {
 		t.Fatalf("expected get after delete 404, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -102,15 +147,16 @@ func TestGetAllConfigsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
 
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", "", `{"value":"15","type":"int","expectedVersion":0,"updatedBy":"tester"}`, "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", editorToken, `{"value":"15","type":"int","updatedBy":"tester"}`, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("seed payments config: %d body=%s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/demo-service/app.theme", "", `{"value":"dark","type":"string","expectedVersion":0,"updatedBy":"tester"}`, "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/demo-service/app.theme", editorToken, `{"value":"dark","type":"string","updatedBy":"tester"}`, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("seed demo-service config: %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -145,7 +191,7 @@ func TestGetAllConfigsEndpoint(t *testing.T) {
 	}
 }
 
-func TestUpdateEndpointConflict(t *testing.T) {
+func TestUpdateEndpointComputesNextVersion(t *testing.T) {
 	server, _, authManager, _ := newTestServer(t)
 
 	editorToken, err := authManager.Generate("editor@example.com", []string{auth.RoleEditor}, time.Hour)
@@ -153,7 +199,7 @@ func TestUpdateEndpointConflict(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	body := `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"flag","value":"true","type":"bool","expectedVersion":0}]}`
+	body := `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"flag","value":"true","type":"bool"}]}`
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, body, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
@@ -162,8 +208,74 @@ func TestUpdateEndpointConflict(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, body, "application/json"))
-	if rec.Code != stdhttp.StatusConflict {
-		t.Fatalf("expected conflict, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected second update to succeed, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Items []domain.ConfigItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal update response: %v", err)
+	}
+	if len(response.Items) != 1 || response.Items[0].Version != 2 {
+		t.Fatalf("expected second bulk write to version 2, got %+v", response.Items)
+	}
+}
+
+func TestPutConfigKeyReturnsLockedForConcurrentWrite(t *testing.T) {
+	server, _, authManager, mini := newTestServer(t)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
+
+	if err := mini.Set("config_write_lock:payments:timeout", "held-lock"); err != nil {
+		t.Fatalf("set config write lock: %v", err)
+	}
+
+	body := `{"value":"30","type":"int","updatedBy":"tester"}`
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", editorToken, body, "application/json"))
+	if rec.Code != stdhttp.StatusLocked {
+		t.Fatalf("expected 423, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "locked by another write operation") {
+		t.Fatalf("expected lock error body, got %q", rec.Body.String())
+	}
+}
+
+func TestPutFeatureKeyReturnsLockedForConcurrentWrite(t *testing.T) {
+	server, _, authManager, mini := newTestServer(t)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
+
+	if err := mini.Set("feature_write_lock:payments:new-checkout", "held-lock"); err != nil {
+		t.Fatalf("set feature write lock: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/features/payments/new-checkout", editorToken, `{"enabled":true,"updatedBy":"tester"}`, "application/json"))
+	if rec.Code != stdhttp.StatusLocked {
+		t.Fatalf("expected 423, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "locked by another write operation") {
+		t.Fatalf("expected lock error body, got %q", rec.Body.String())
+	}
+}
+
+func TestPutConfigKeyReturnsLockedWhenBulkNamespaceLockHeld(t *testing.T) {
+	server, _, authManager, mini := newTestServer(t)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
+
+	if err := mini.Set("config_bulk_lock:payments", "held-lock"); err != nil {
+		t.Fatalf("set namespace lock: %v", err)
+	}
+
+	body := `{"value":"30","type":"int","updatedBy":"tester"}`
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/timeout", editorToken, body, "application/json"))
+	if rec.Code != stdhttp.StatusLocked {
+		t.Fatalf("expected 423, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "namespace") || !strings.Contains(rec.Body.String(), "locked by another write operation") {
+		t.Fatalf("expected namespace lock error body, got %q", rec.Body.String())
 	}
 }
 
@@ -175,7 +287,7 @@ func TestDryRunDoesNotPersist(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
-	body := `{"namespace":"payments","updatedBy":"editor@example.com","dryRun":true,"entries":[{"key":"flag","value":"true","type":"bool","expectedVersion":0}]}`
+	body := `{"namespace":"payments","updatedBy":"editor@example.com","dryRun":true,"entries":[{"key":"flag","value":"true","type":"bool"}]}`
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, body, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
@@ -214,7 +326,6 @@ items:
   api_token:
     value: super-secret
     type: string
-    expectedVersion: 0
     isSecret: true
   max_retries: 3
 `
@@ -267,12 +378,112 @@ items:
 	}
 }
 
+func TestBulkUpdateAndImportAreMergeOnly(t *testing.T) {
+	server, _, authManager, _ := newTestServer(t)
+
+	editorToken, err := authManager.Generate("editor@example.com", []string{auth.RoleEditor}, time.Hour)
+	if err != nil {
+		t.Fatalf("generate editor token: %v", err)
+	}
+	ownerToken, err := authManager.Generate("owner@example.com", []string{auth.RoleOwner}, time.Hour)
+	if err != nil {
+		t.Fatalf("generate owner token: %v", err)
+	}
+
+	seed := `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"timeout","value":"30","type":"int"},{"key":"flag","value":"true","type":"bool"}]}`
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, seed, "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected seed update 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	updateOne := `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"timeout","value":"45","type":"int"}]}`
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, updateOne, "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected merge update 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	importOne := `{"namespace":"payments","updatedBy":"owner@example.com","items":{"timeout":{"value":60,"type":"int"}}}`
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/import", ownerToken, importOne, "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected merge import 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/config/export?namespace=payments&format=json", ownerToken, "", "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected export 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var exported domain.ExportResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &exported); err != nil {
+		t.Fatalf("unmarshal export: %v", err)
+	}
+	if len(exported.Items) != 2 {
+		t.Fatalf("expected omitted key to remain after update/import, got %+v", exported.Items)
+	}
+	values := map[string]string{}
+	for _, item := range exported.Items {
+		values[item.Key] = item.Value
+	}
+	if values["timeout"] != "60" || values["flag"] != "true" {
+		t.Fatalf("unexpected merge-only values: %+v", values)
+	}
+}
+
+func TestBulkUpdateNamespaceLockReturnsLocked(t *testing.T) {
+	server, _, authManager, mini := newTestServer(t)
+
+	editorToken, err := authManager.Generate("editor@example.com", []string{auth.RoleEditor}, time.Hour)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	if err := mini.Set("config_bulk_lock:payments", "held-lock"); err != nil {
+		t.Fatalf("set lock: %v", err)
+	}
+
+	body := `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"flag","value":"true","type":"bool"}]}`
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, body, "application/json"))
+	if rec.Code != stdhttp.StatusLocked {
+		t.Fatalf("expected 423, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBulkUpdateReleasesNamespaceLockAfterError(t *testing.T) {
+	server, _, authManager, mini := newTestServer(t)
+
+	editorToken, err := authManager.Generate("editor@example.com", []string{auth.RoleEditor}, time.Hour)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	if err := mini.Set("audit:payments", "wrong-type"); err != nil {
+		t.Fatalf("set wrong audit key type: %v", err)
+	}
+
+	body := `{"namespace":"payments","updatedBy":"editor@example.com","entries":[{"key":"flag","value":"true","type":"bool"}]}`
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, body, "application/json"))
+	if rec.Code != stdhttp.StatusInternalServerError {
+		t.Fatalf("expected first update to fail with 500, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	mini.Del("audit:payments")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPost, "/config/update", editorToken, body, "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected lock to be released after error, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAPIUpdatePublishesEventToSDK(t *testing.T) {
-	server, _, _, mini := newTestServer(t)
+	server, _, authManager, mini := newTestServer(t)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
 
 	sdkClient, err := sdk.NewClient(
 		sdk.WithRedisAddr(mini.Addr()),
-		sdk.WithNamespace("payments"),
 		sdk.WithLogger(slog.Default()),
 		sdk.WithRetryInterval(50*time.Millisecond),
 	)
@@ -280,20 +491,21 @@ func TestAPIUpdatePublishesEventToSDK(t *testing.T) {
 		t.Fatalf("new sdk client: %v", err)
 	}
 	defer func() { _ = sdkClient.Close() }()
+	payments := sdkClient.Namespace("payments")
 	if err := sdkClient.Start(context.Background()); err != nil {
 		t.Fatalf("start sdk client: %v", err)
 	}
 
 	callbackCh := make(chan sdk.Value, 1)
-	sdkClient.Watch("flag", func(item sdk.Value) {
+	payments.Watch("flag", func(item sdk.Value) {
 		callbackCh <- item
 	})
 
 	time.Sleep(100 * time.Millisecond)
 
-	body := `{"value":"true","type":"bool","expectedVersion":0,"updatedBy":"editor@example.com"}`
+	body := `{"value":"true","type":"bool","updatedBy":"editor@example.com"}`
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/flag", "", body, "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/configs/payments/flag", editorToken, body, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected update 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -309,11 +521,11 @@ func TestAPIUpdatePublishesEventToSDK(t *testing.T) {
 }
 
 func TestFeatureToggleHotReload(t *testing.T) {
-	server, _, _, mini := newTestServer(t)
+	server, _, authManager, mini := newTestServer(t)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
 
 	sdkClient, err := sdk.NewClient(
 		sdk.WithRedisAddr(mini.Addr()),
-		sdk.WithNamespace("payments"),
 		sdk.WithLogger(slog.Default()),
 		sdk.WithRetryInterval(50*time.Millisecond),
 	)
@@ -321,36 +533,50 @@ func TestFeatureToggleHotReload(t *testing.T) {
 		t.Fatalf("new sdk client: %v", err)
 	}
 	defer func() { _ = sdkClient.Close() }()
+	payments := sdkClient.Namespace("payments")
 	if err := sdkClient.Start(context.Background()); err != nil {
 		t.Fatalf("start sdk client: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/features/payments/new-checkout", "", `{"enabled":true,"expectedVersion":0,"updatedBy":"editor@example.com"}`, "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/features/payments/new-checkout", editorToken, `{"enabled":true,"updatedBy":"editor@example.com"}`, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected feature put 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var feature domain.FeatureToggle
+	if err := json.Unmarshal(rec.Body.Bytes(), &feature); err != nil {
+		t.Fatalf("unmarshal feature put response: %v", err)
+	}
+	if feature.Version != 1 {
+		t.Fatalf("expected created feature version 1, got %+v", feature)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if sdkClient.IsFeatureEnabled("new-checkout") {
+		if payments.IsFeatureEnabled("new-checkout") {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if !sdkClient.IsFeatureEnabled("new-checkout") {
+	if !payments.IsFeatureEnabled("new-checkout") {
 		t.Fatalf("expected feature toggle to hot-reload to true")
 	}
 
 	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/features/payments/new-checkout", "", `{"enabled":false,"expectedVersion":1,"updatedBy":"editor@example.com"}`, "application/json"))
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodPut, "/features/payments/new-checkout", editorToken, `{"enabled":false,"updatedBy":"editor@example.com"}`, "application/json"))
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected feature update 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &feature); err != nil {
+		t.Fatalf("unmarshal feature update response: %v", err)
+	}
+	if feature.Version != 2 {
+		t.Fatalf("expected updated feature version 2, got %+v", feature)
 	}
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if !sdkClient.IsFeatureEnabled("new-checkout") {
+		if !payments.IsFeatureEnabled("new-checkout") {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -370,6 +596,15 @@ func newTestServer(t *testing.T) (*Server, *redisstorage.ConfigStorage, *auth.Ma
 	authManager := auth.NewManager("secret")
 	server := NewServer(slog.Default(), svc, featureSvc, authManager, metricsRegistry)
 	return server, repo, authManager, mini
+}
+
+func mustToken(t *testing.T, authManager *auth.Manager, subject string, roles ...string) string {
+	t.Helper()
+	token, err := authManager.Generate(subject, roles, time.Hour)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	return token
 }
 
 func newRequest(method, path, token, body, contentType string) *stdhttp.Request {
