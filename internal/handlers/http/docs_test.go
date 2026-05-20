@@ -21,7 +21,7 @@ func TestSwaggerEndpoints(t *testing.T) {
 	mini := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mini.Addr()})
 	repo := redisstorage.NewConfigStorage(client, 100)
-	featureRepo := redisstorage.NewFeatureStorage(client)
+	featureRepo := redisstorage.NewFeatureStorage(client, 100)
 	metricsRegistry := metrics.NewRegistry()
 	svc := configservice.NewService(repo, redisstorage.NewPubSub(client), metricsRegistry)
 	featureSvc := featureservice.NewService(featureRepo)

@@ -40,7 +40,7 @@ func New(cfg appconfig.Config) *App {
 
 	metricsRegistry := metrics.NewRegistry()
 	configStorage := redisstorage.NewConfigStorage(redisClient, cfg.AuditLimit)
-	featureStorage := redisstorage.NewFeatureStorage(redisClient)
+	featureStorage := redisstorage.NewFeatureStorage(redisClient, cfg.AuditLimit)
 	publisher := redisstorage.NewPubSub(redisClient)
 	service := configservice.NewService(configStorage, publisher, metricsRegistry)
 	featureService := featureservice.NewService(featureStorage)

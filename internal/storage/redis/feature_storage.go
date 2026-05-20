@@ -2,11 +2,11 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -15,11 +15,15 @@ import (
 )
 
 type FeatureStorage struct {
-	client *goredis.Client
+	client     *goredis.Client
+	auditLimit int64
 }
 
-func NewFeatureStorage(client *goredis.Client) *FeatureStorage {
-	return &FeatureStorage{client: client}
+func NewFeatureStorage(client *goredis.Client, auditLimit int64) *FeatureStorage {
+	return &FeatureStorage{
+		client:     client,
+		auditLimit: auditLimit,
+	}
 }
 
 func (s *FeatureStorage) GetNamespace(ctx context.Context, namespace string) ([]domain.FeatureToggle, error) {
@@ -90,10 +94,11 @@ func (s *FeatureStorage) Upsert(ctx context.Context, namespace, key string, enab
 	}()
 
 	now := time.Now().UTC()
-	result, err := s.client.Eval(ctx, upsertFeatureScript, []string{
+	result, err := upsertFeatureScript.Run(ctx, s.client, []string{
 		featureSetKey(namespace),
+		auditListKey(namespace),
 		updatesChannel(namespace),
-	}, namespace, key, strconv.FormatBool(enabled), now.Format(time.RFC3339Nano), updatedBy, requestID).Result()
+	}, namespace, key, strconv.FormatBool(enabled), now.Format(time.RFC3339Nano), updatedBy, requestID, s.auditLimit).Result()
 	if err != nil {
 		return domain.FeatureToggle{}, fmt.Errorf("upsert feature key %q: %w", key, err)
 	}
@@ -133,31 +138,23 @@ func (s *FeatureStorage) releaseFeatureWriteLock(ctx context.Context, namespace,
 }
 
 func (s *FeatureStorage) DeleteKey(ctx context.Context, namespace, key, updatedBy, requestID string) error {
-	if _, err := s.GetKey(ctx, namespace, key); err != nil {
-		return err
-	}
-
-	payload, err := json.Marshal(domain.ConfigUpdateEvent{
-		Namespace: namespace,
-		Resource:  "feature",
-		Keys:      []string{key},
-		Operation: "deleted",
-		UpdatedAt: time.Now().UTC(),
-		UpdatedBy: updatedBy,
-		RequestID: requestID,
-	})
+	now := time.Now().UTC()
+	err := deleteFeatureScript.Run(ctx, s.client, []string{
+		featureSetKey(namespace),
+		auditListKey(namespace),
+		updatesChannel(namespace),
+	}, namespace, key, now.Format(time.RFC3339Nano), updatedBy, requestID, s.auditLimit).Err()
 	if err != nil {
-		return fmt.Errorf("marshal feature delete event: %w", err)
-	}
-
-	pipe := s.client.TxPipeline()
-	pipe.Del(ctx, featureRedisKey(namespace, key))
-	pipe.SRem(ctx, featureSetKey(namespace), key)
-	pipe.Publish(ctx, updatesChannel(namespace), payload)
-	if _, err := pipe.Exec(ctx); err != nil {
+		if isFeatureNotFoundScriptError(err) {
+			return domain.ErrNotFound
+		}
 		return fmt.Errorf("delete feature key %q: %w", key, err)
 	}
 	return nil
+}
+
+func isFeatureNotFoundScriptError(err error) bool {
+	return strings.Contains(err.Error(), "FEATURE_NOT_FOUND")
 }
 
 func decodeFeatureToggle(hash map[string]string) (domain.FeatureToggle, error) {
@@ -182,42 +179,3 @@ func decodeFeatureToggle(hash map[string]string) (domain.FeatureToggle, error) {
 		UpdatedBy: hash["updated_by"],
 	}, nil
 }
-
-const upsertFeatureScript = `
-local namespace = ARGV[1]
-local itemKey = ARGV[2]
-local enabled = ARGV[3]
-local updatedAt = ARGV[4]
-local updatedBy = ARGV[5]
-local requestID = ARGV[6]
-local redisKey = 'feature:' .. namespace .. ':' .. itemKey
-local featureSetType = redis.call('TYPE', KEYS[1])['ok']
-
-if featureSetType ~= 'none' and featureSetType ~= 'set' then
-	return { err = 'INVALID_FEATURE_SET_TYPE' }
-end
-
-local currentVersion = tonumber(redis.call('HGET', redisKey, 'version')) or 0
-
-local nextVersion = tostring(currentVersion + 1)
-redis.call('HSET', redisKey,
-	'namespace', namespace,
-	'key', itemKey,
-	'enabled', enabled,
-	'version', nextVersion,
-	'updated_at', updatedAt,
-	'updated_by', updatedBy
-)
-redis.call('SADD', KEYS[1], itemKey)
-redis.call('PUBLISH', KEYS[2], cjson.encode({
-	namespace = namespace,
-	resource = 'feature',
-	keys = { itemKey },
-	operation = 'updated',
-	updatedAt = updatedAt,
-	updatedBy = updatedBy,
-	requestId = requestID,
-}))
-
-return { enabled, nextVersion }
-`

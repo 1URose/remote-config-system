@@ -607,12 +607,52 @@ func TestFeatureToggleHotReload(t *testing.T) {
 	t.Fatalf("expected feature toggle to hot-reload to false")
 }
 
+func TestFeaturePutAppearsInAuditEndpoint(t *testing.T) {
+	server, _, authManager, _ := newTestServer(t)
+	editorToken := mustToken(t, authManager, "editor@example.com", auth.RoleEditor)
+
+	req := newRequest(stdhttp.MethodPut, "/features/payments/new-checkout", editorToken, `{"enabled":true}`, "application/json")
+	req.Header.Set("X-Request-ID", "req-feature-audit")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected feature put 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newRequest(stdhttp.MethodGet, "/audit?namespace=payments", editorToken, "", "application/json"))
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected audit 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Namespace string               `json:"namespace"`
+		Items     []domain.AuditRecord `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal audit response: %v", err)
+	}
+	if response.Namespace != "payments" || len(response.Items) != 1 {
+		t.Fatalf("unexpected feature audit response: %+v", response)
+	}
+	record := response.Items[0]
+	if record.Key != "new-checkout" || record.Type != "feature" || record.Result != "updated" {
+		t.Fatalf("unexpected feature audit metadata: %+v", record)
+	}
+	if record.OldValue != "" || record.NewValue != "true" || record.Version != 1 || record.IsSecret {
+		t.Fatalf("unexpected feature audit values: %+v", record)
+	}
+	if record.UpdatedBy != "editor@example.com" || record.RequestID != "req-feature-audit" {
+		t.Fatalf("unexpected feature audit actor/request: %+v", record)
+	}
+}
+
 func newTestServer(t *testing.T) (*Server, *redisstorage.ConfigStorage, *auth.Manager, *miniredis.Miniredis) {
 	t.Helper()
 	mini := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mini.Addr()})
 	repo := redisstorage.NewConfigStorage(client, 100)
-	featureRepo := redisstorage.NewFeatureStorage(client)
+	featureRepo := redisstorage.NewFeatureStorage(client, 100)
 	metricsRegistry := metrics.NewRegistry()
 	svc := configservice.NewService(repo, redisstorage.NewPubSub(client), metricsRegistry)
 	featureSvc := featureservice.NewService(featureRepo)

@@ -70,7 +70,7 @@ func NewClient(options ...Option) (*Client, error) {
 	return &Client{
 		redisClient:    redisClient,
 		storage:        redisstorage.NewConfigStorage(redisClient, 200),
-		featureStorage: redisstorage.NewFeatureStorage(redisClient),
+		featureStorage: redisstorage.NewFeatureStorage(redisClient, 200),
 		pubsub:         redisstorage.NewPubSub(redisClient),
 		cache:          appcache.New(),
 		watchers:       newWatchRegistry(),
